@@ -361,6 +361,27 @@ function registerServiceInOrder(srvKey) {
   }
 }
 
+// শুধুমাত্র নির্দিষ্ট দেশ যোগ/আপডেট করে; অন্য সব দেশের ডাটা ও নম্বর সম্পূর্ণ অক্ষত রাখে
+function upsertCountryEntry(srvKey, resolved) {
+  registerServiceInOrder(srvKey);
+  const serviceMap = numbersDatabase[srvKey];
+  const existing = serviceMap[resolved.cKey] || {
+    name: resolved.name,
+    flag: resolved.flag,
+    cc: resolved.cc || "",
+    numbers: [],
+  };
+
+  serviceMap[resolved.cKey] = {
+    name: resolved.name || existing.name,
+    flag: resolved.flag || existing.flag,
+    cc: resolved.cc || existing.cc || "",
+    numbers: Array.isArray(existing.numbers) ? [...existing.numbers] : [],
+  };
+
+  return serviceMap[resolved.cKey];
+}
+
 function removeServiceFromOrder(srvKey) {
   delete numbersDatabase[srvKey];
   const idx = serviceOrder.indexOf(srvKey);
@@ -451,7 +472,6 @@ async function notifyUsersAboutNewNumbers(serviceKey, countryData, addedCount) {
   return { sent, failed };
 }
 
-// --- ১ নম্বর ছবির মতো মেইন কাস্টম কিবোর্ড প্যাড ---
 function mainKeyboard(userId) {
   const rows = [
     ["📞 GET NUMBER"],
@@ -1099,7 +1119,7 @@ bot.action(/^adm_cnt_srv:(.+)$/, async (ctx) => {
     const ccLabel = cData.cc ? ` (${cData.cc})` : "";
     rows.push([
       Markup.button.callback(
-        `🟥 🗑 ${cData.flag} ${cData.name}${ccLabel}`,
+        `🟥 🗑 ${cData.flag} ${cData.name}${ccLabel} — ${cData.numbers.length} টি`,
         `adm_cnt_del:${srvKey}:${cKey}`
       ),
     ]);
@@ -1407,7 +1427,6 @@ async function showServicesMenu(ctx, isEdit = false) {
 
 bot.hears("📞 GET NUMBER", (ctx) => showServicesMenu(ctx, false));
 
-// ২ নম্বর ছবির মতো ২ কলাম গ্রিডে ইউজারের সিলেক্ট করা দেশগুলো দেখানো হবে
 bot.action(/^service:(.+)$/, async (ctx) => {
   const ok = await ensureVerifiedAccess(ctx);
   if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
@@ -1416,7 +1435,6 @@ bot.action(/^service:(.+)$/, async (ctx) => {
   const service = ctx.match[1];
   const countries = numbersDatabase[service] || {};
 
-  // অ্যাডমিন থেকে যে দেশগুলো সিলেক্ট/যোগ করা হয়েছে (যাদের নম্বর আছে) সেগুলো ২ কলামে সাজাবে
   const selectedCountries = Object.entries(countries).filter(
     ([, data]) => Array.isArray(data.numbers) && data.numbers.length > 0
   );
@@ -1709,16 +1727,7 @@ bot.on("text", async (ctx) => {
       );
     }
 
-    registerServiceInOrder(st.service);
-    const existingEntry = numbersDatabase[st.service][resolved.cKey];
-    numbersDatabase[st.service][resolved.cKey] = {
-      name: resolved.name,
-      flag: resolved.flag,
-      cc: resolved.cc || existingEntry?.cc || "",
-      numbers: existingEntry?.numbers || [],
-    };
-
-    const savedCountry = numbersDatabase[st.service][resolved.cKey];
+    const savedCountry = upsertCountryEntry(st.service, resolved);
     const srvName = titleCase(st.service);
     const ccInfo = savedCountry.cc ? ` (${savedCountry.cc})` : "";
     adminState.delete(uid);
