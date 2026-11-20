@@ -6,7 +6,6 @@ const BOT_TOKEN =
 
 const ADMIN_IDS = [8771921458];
 
-// শুরুতে ডিফল্ট ভ্যালু; পরে Admin Panel -> Group Control থেকে সরাসরি পরিবর্তন করতে পারবেন
 const groupConfig = {
   mainGroupLink: process.env.MAIN_GROUP_LINK || "https://t.me/your_main_group_link",
   mainGroupChatId: process.env.MAIN_GROUP_CHAT_ID || "",
@@ -33,48 +32,123 @@ const userSession = new Map();
 const adminState = new Map();
 const otpWatchers = new Map();
 
-const COUNTRY_AUTO_DATA = {
+const COUNTRY_LOOKUP = {
   bangladesh: { name: "Bangladesh", flag: "🇧🇩", cc: "+880" },
+  bd: { name: "Bangladesh", flag: "🇧🇩", cc: "+880" },
+  বাংলাদেশ: { name: "Bangladesh", flag: "🇧🇩", cc: "+880" },
+
   india: { name: "India", flag: "🇮🇳", cc: "+91" },
+  ভারত: { name: "India", flag: "🇮🇳", cc: "+91" },
+
   pakistan: { name: "Pakistan", flag: "🇵🇰", cc: "+92" },
+  পাকিস্তান: { name: "Pakistan", flag: "🇵🇰", cc: "+92" },
+
   cuba: { name: "Cuba", flag: "🇨🇺", cc: "+53" },
+  কিউবা: { name: "Cuba", flag: "🇨🇺", cc: "+53" },
+
   tanzania: { name: "Tanzania", flag: "🇹🇿", cc: "+255" },
+  তানজানিয়া: { name: "Tanzania", flag: "🇹🇿", cc: "+255" },
+
   united_states: { name: "United States", flag: "🇺🇸", cc: "+1" },
   usa: { name: "United States", flag: "🇺🇸", cc: "+1" },
   us: { name: "United States", flag: "🇺🇸", cc: "+1" },
+  america: { name: "United States", flag: "🇺🇸", cc: "+1" },
+  যুক্তরাষ্ট্র: { name: "United States", flag: "🇺🇸", cc: "+1" },
+
   canada: { name: "Canada", flag: "🇨🇦", cc: "+1" },
+  কানাডা: { name: "Canada", flag: "🇨🇦", cc: "+1" },
+
   united_kingdom: { name: "United Kingdom", flag: "🇬🇧", cc: "+44" },
   uk: { name: "United Kingdom", flag: "🇬🇧", cc: "+44" },
+  যুক্তরাজ্য: { name: "United Kingdom", flag: "🇬🇧", cc: "+44" },
+
   egypt: { name: "Egypt", flag: "🇪🇬", cc: "+20" },
+  মিশর: { name: "Egypt", flag: "🇪🇬", cc: "+20" },
+
   indonesia: { name: "Indonesia", flag: "🇮🇩", cc: "+62" },
+  ইন্দোনেশিয়া: { name: "Indonesia", flag: "🇮🇩", cc: "+62" },
+
   malaysia: { name: "Malaysia", flag: "🇲🇾", cc: "+60" },
+  মালয়েশিয়া: { name: "Malaysia", flag: "🇲🇾", cc: "+60" },
+
   philippines: { name: "Philippines", flag: "🇵🇭", cc: "+63" },
+  ফিলিপাইন: { name: "Philippines", flag: "🇵🇭", cc: "+63" },
+
   vietnam: { name: "Vietnam", flag: "🇻🇳", cc: "+84" },
+  ভিয়েতনাম: { name: "Vietnam", flag: "🇻🇳", cc: "+84" },
+
   thailand: { name: "Thailand", flag: "🇹🇭", cc: "+66" },
+  থাইল্যান্ড: { name: "Thailand", flag: "🇹🇭", cc: "+66" },
+
   brazil: { name: "Brazil", flag: "🇧🇷", cc: "+55" },
+  ব্রাজিল: { name: "Brazil", flag: "🇧🇷", cc: "+55" },
+
   russia: { name: "Russia", flag: "🇷🇺", cc: "+7" },
+  রাশিয়া: { name: "Russia", flag: "🇷🇺", cc: "+7" },
+
   germany: { name: "Germany", flag: "🇩🇪", cc: "+49" },
+  জার্মানি: { name: "Germany", flag: "🇩🇪", cc: "+49" },
+
   france: { name: "France", flag: "🇫🇷", cc: "+33" },
+  ফ্রান্স: { name: "France", flag: "🇫🇷", cc: "+33" },
+
   italy: { name: "Italy", flag: "🇮🇹", cc: "+39" },
+  ইতালি: { name: "Italy", flag: "🇮🇹", cc: "+39" },
+
   spain: { name: "Spain", flag: "🇪🇸", cc: "+34" },
+  স্পেন: { name: "Spain", flag: "🇪🇸", cc: "+34" },
+
   australia: { name: "Australia", flag: "🇦🇺", cc: "+61" },
+  অস্ট্রেলিয়া: { name: "Australia", flag: "🇦🇺", cc: "+61" },
+
   saudi_arabia: { name: "Saudi Arabia", flag: "🇸🇦", cc: "+966" },
+  সৌদি_আরব: { name: "Saudi Arabia", flag: "🇸🇦", cc: "+966" },
+
   uae: { name: "United Arab Emirates", flag: "🇦🇪", cc: "+971" },
   united_arab_emirates: { name: "United Arab Emirates", flag: "🇦🇪", cc: "+971" },
+  আমিরাত: { name: "United Arab Emirates", flag: "🇦🇪", cc: "+971" },
+
   turkey: { name: "Turkey", flag: "🇹🇷", cc: "+90" },
+  তুরস্ক: { name: "Turkey", flag: "🇹🇷", cc: "+90" },
+
   nepal: { name: "Nepal", flag: "🇳🇵", cc: "+977" },
+  নেপাল: { name: "Nepal", flag: "🇳🇵", cc: "+977" },
+
   sri_lanka: { name: "Sri Lanka", flag: "🇱🇰", cc: "+94" },
+  শ্রীলঙ্কা: { name: "Sri Lanka", flag: "🇱🇰", cc: "+94" },
+
   nigeria: { name: "Nigeria", flag: "🇳🇬", cc: "+234" },
+  নাইজেরিয়া: { name: "Nigeria", flag: "🇳🇬", cc: "+234" },
+
   kenya: { name: "Kenya", flag: "🇰🇪", cc: "+254" },
+  কেনিয়া: { name: "Kenya", flag: "🇰🇪", cc: "+254" },
+
   south_africa: { name: "South Africa", flag: "🇿🇦", cc: "+27" },
+  দক্ষিণ_আফ্রিকা: { name: "South Africa", flag: "🇿🇦", cc: "+27" },
+
   morocco: { name: "Morocco", flag: "🇲🇦", cc: "+212" },
+  মরক্কো: { name: "Morocco", flag: "🇲🇦", cc: "+212" },
+
   mexico: { name: "Mexico", flag: "🇲🇽", cc: "+52" },
+  মেক্সিকো: { name: "Mexico", flag: "🇲🇽", cc: "+52" },
+
   colombia: { name: "Colombia", flag: "🇨🇴", cc: "+57" },
+  কলম্বিয়া: { name: "Colombia", flag: "🇨🇴", cc: "+57" },
+
   argentina: { name: "Argentina", flag: "🇦🇷", cc: "+54" },
+  আর্জেন্টিনা: { name: "Argentina", flag: "🇦🇷", cc: "+54" },
+
   peru: { name: "Peru", flag: "🇵🇪", cc: "+51" },
+  পেরু: { name: "Peru", flag: "🇵🇪", cc: "+51" },
+
   poland: { name: "Poland", flag: "🇵🇱", cc: "+48" },
+  পোল্যান্ড: { name: "Poland", flag: "🇵🇱", cc: "+48" },
+
   netherlands: { name: "Netherlands", flag: "🇳🇱", cc: "+31" },
+  নেদারল্যান্ডস: { name: "Netherlands", flag: "🇳🇱", cc: "+31" },
+
   ukraine: { name: "Ukraine", flag: "🇺🇦", cc: "+380" },
+  ইউক্রেন: { name: "Ukraine", flag: "🇺🇦", cc: "+380" },
 };
 
 function trackUser(ctx) {
@@ -198,7 +272,7 @@ function makeKey(str) {
   return str
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/[^a-z0-9\u0980-\u09ff]+/g, "_")
     .replace(/^_+|_+$/g, "");
 }
 
@@ -216,34 +290,52 @@ function resolveCountryDetails(rawInput) {
   const cKey = makeKey(rawName);
   if (!cKey) return null;
 
-  const autoInfo = COUNTRY_AUTO_DATA[cKey];
-  const name = autoInfo ? autoInfo.name : titleCase(rawName);
+  const matched = COUNTRY_LOOKUP[cKey];
+  const canonicalKey = matched
+    ? makeKey(matched.name)
+    : cKey;
+  const name = matched ? matched.name : titleCase(rawName);
   const flag =
-    parts[1] && parts[1].length > 0 ? parts[1] : autoInfo?.flag || "🌍";
+    parts[1] && parts[1].length > 0 ? parts[1] : matched?.flag || "🏳️";
 
-  let cc = autoInfo?.cc || "";
+  let cc = matched?.cc || "";
   if (parts[2]) {
     const cleanCc = parts[2].replace(/[^\d+]/g, "").trim();
     if (cleanCc) {
       cc = cleanCc.startsWith("+") ? cleanCc : `+${cleanCc}`;
     }
   }
-  if (!cc) {
-    cc = "+1";
-  }
 
-  return { cKey, name, flag, cc };
+  // কোনো কান্ট্রি কোড না পেলে জোর করে +1 বসানো হবে না, বরং ফাঁকা/অটো রাখা হবে
+  return { cKey: canonicalKey, name, flag, cc };
 }
 
-function normalizeNumberWithCc(rawNum, cc) {
+function formatNumberForDisplay(rawNum, cc, removeCC = false) {
   const digits = String(rawNum || "").replace(/[^\d]/g, "").trim();
   if (!digits) return "";
   const ccDigits = String(cc || "").replace(/[^\d]/g, "").trim();
-  if (!ccDigits) return digits;
-  if (digits.startsWith(ccDigits)) {
-    return digits;
+
+  let fullDigits = digits;
+  if (ccDigits && !digits.startsWith(ccDigits)) {
+    fullDigits = `${ccDigits}${digits}`;
   }
-  return `${ccDigits}${digits}`;
+
+  if (removeCC && ccDigits && fullDigits.startsWith(ccDigits)) {
+    const stripped = fullDigits.slice(ccDigits.length);
+    return stripped ? `+${stripped}` : `+${fullDigits}`;
+  }
+
+  return `+${fullDigits}`;
+}
+
+function normalizeNumberForStorage(rawNum, cc) {
+  const digits = String(rawNum || "").replace(/[^\d]/g, "").trim();
+  if (!digits) return "";
+  const ccDigits = String(cc || "").replace(/[^\d]/g, "").trim();
+  if (ccDigits && !digits.startsWith(ccDigits)) {
+    return `${ccDigits}${digits}`;
+  }
+  return digits;
 }
 
 function registerServiceInOrder(srvKey) {
@@ -295,8 +387,18 @@ function getServiceEmoji(serviceKey) {
 function parseNumbersFromText(rawText, cc = "") {
   return rawText
     .split(/[\r\n,]+/)
-    .map((line) => normalizeNumberWithCc(line, cc))
+    .map((line) => normalizeNumberForStorage(line, cc))
     .filter((num) => num.length >= 6);
+}
+
+function mergeNumbersAppend(existingList, incomingList) {
+  const base = Array.isArray(existingList) ? [...existingList] : [];
+  for (const num of incomingList) {
+    if (!base.includes(num)) {
+      base.push(num);
+    }
+  }
+  return base;
 }
 
 function sleep(ms) {
@@ -308,13 +410,14 @@ async function notifyUsersAboutNewNumbers(serviceKey, countryData, addedCount) {
 
   const srvEmoji = getServiceEmoji(serviceKey);
   const srvName = titleCase(serviceKey);
+  const ccInfo = countryData.cc ? ` (${countryData.cc})` : "";
   const noticeText =
     `🔔 *নতুন নাম্বার যুক্ত হয়েছে!*\n` +
     `━━━━━━━━━━━━━━━━━━\n` +
     `${srvEmoji} *সার্ভিস:* ${srvName}\n` +
-    `🌍 *দেশ:* ${countryData.flag} ${countryData.name} (${countryData.cc})\n` +
+    `🌍 *দেশ:* ${countryData.flag} ${countryData.name}${ccInfo}\n` +
     `🔢 *নতুন নাম্বার:* ${addedCount} টি\n\n` +
-    `এখনই *📞 GET NUMBER* থেকে কান্ট্রি কোডসহ নাম্বার নিতে পারবেন!`;
+    `এখনই *📞 GET NUMBER* থেকে নাম্বার নিতে পারবেন!`;
 
   let sent = 0;
   let failed = 0;
@@ -391,7 +494,7 @@ async function fetchNumberFromPanelApi(service, countryData) {
       data?.data?.number ||
       data?.data?.phone ||
       "";
-    const normalized = normalizeNumberWithCc(rawPhone, countryData.cc);
+    const normalized = normalizeNumberForStorage(rawPhone, countryData.cc);
     return normalized.length >= 6 ? normalized : null;
   } catch (err) {
     console.error("Panel API number fetch error:", err);
@@ -547,14 +650,13 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
   }
 
   const selected = getThreeNumbers(pool, session.offset);
-  const ccDigits = (countryData.cc || "").replace("+", "");
 
   const rows = selected.map((rawNum) => {
-    const withCc = normalizeNumberWithCc(rawNum, countryData.cc);
-    const displayNum =
-      session.removeCC && ccDigits && withCc.startsWith(ccDigits)
-        ? withCc.slice(ccDigits.length)
-        : `+${withCc}`;
+    const displayNum = formatNumberForDisplay(
+      rawNum,
+      countryData.cc,
+      session.removeCC
+    );
 
     return [
       {
@@ -590,13 +692,14 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
   ]);
 
   const serviceTitle = titleCase(service);
+  const ccBadge = countryData.cc ? `${countryData.cc} • ` : "";
   const sourceBadge = isPanelApiConfigured()
     ? "🟢 ⚡ Live API"
     : "🟦 📦 Local Pool";
   const text =
-    `💠 ${countryData.flag} *${serviceTitle} Number Assigned* (${countryData.cc} • ${sourceBadge} • #${session.batch || 1})\n` +
+    `💠 ${countryData.flag} *${serviceTitle} Number Assigned* (${ccBadge}${sourceBadge} • #${session.batch || 1})\n` +
     `🟡 *Waiting for OTP....*\n\n` +
-    `_(কান্ট্রি কোডসহ নাম্বারের ওপর চাপ দিলেই কপি হয়ে যাবে)_`;
+    `_(নাম্বারের ওপর চাপ দিলেই কপি হয়ে যাবে)_`;
 
   return {
     text,
@@ -978,9 +1081,10 @@ bot.action(/^adm_cnt_srv:(.+)$/, async (ctx) => {
   ];
 
   Object.entries(countries).forEach(([cKey, cData]) => {
+    const ccLabel = cData.cc ? ` (${cData.cc})` : "";
     rows.push([
       Markup.button.callback(
-        `🟥 🗑 ${cData.flag} ${cData.name} (${cData.cc})`,
+        `🟥 🗑 ${cData.flag} ${cData.name}${ccLabel}`,
         `adm_cnt_del:${srvKey}:${cKey}`
       ),
     ]);
@@ -1010,8 +1114,9 @@ bot.action(/^adm_cnt_add:(.+)$/, async (ctx) => {
 
   await ctx.editMessageText(
     `🟩 *ADD COUNTRY (${titleCase(srvKey)})*\n\n` +
-      `শুধু **দেশের নাম** লিখুন (পতাকা ও কান্ট্রি কোড অটো সেট হয়ে যাবে):\n` +
-      `উদাহরণ: \`Bangladesh\`, \`Cuba\`, \`Tanzania\`, \`United States\`, \`India\``,
+      `দেশের নাম লিখুন (পতাকা ও কান্ট্রি কোড অটো সেট হয়ে যাবে):\n` +
+      `উদাহরণ: \`Bangladesh\`, \`Cuba\`, \`Tanzania\`, \`India\`, \`Egypt\`\n\n` +
+      `_(নতুন কোনো দেশ হলে \`Name, 🏳️, +code\` এভাবেও দিতে পারেন)_`,
     { parse_mode: "Markdown" }
   );
 });
@@ -1076,12 +1181,15 @@ bot.action(/^adm_srv:(.+)$/, async (ctx) => {
   registerServiceInOrder(service);
   const countries = numbersDatabase[service] || {};
 
-  const buttons = Object.entries(countries).map(([key, d]) => [
-    Markup.button.callback(
-      `🟦 ${d.flag} ${d.name} (${d.cc}) — ${d.numbers.length} টি`,
-      `adm_cnt:${service}:${key}`
-    ),
-  ]);
+  const buttons = Object.entries(countries).map(([key, d]) => {
+    const ccLabel = d.cc ? ` (${d.cc})` : "";
+    return [
+      Markup.button.callback(
+        `🟦 ${d.flag} ${d.name}${ccLabel} — ${d.numbers.length} টি`,
+        `adm_cnt:${service}:${key}`
+      ),
+    ];
+  });
 
   buttons.push([
     Markup.button.callback(
@@ -1117,12 +1225,14 @@ bot.action(/^adm_cnt:(.+):(.+)$/, async (ctx) => {
     mode: "append",
   });
 
+  const ccInfo = countryData.cc ? ` (${countryData.cc})` : "";
   await ctx.editMessageText(
     `🟩 *নাম্বার অ্যাড করুন*\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `${getServiceEmoji(service)} *সার্ভিস:* ${titleCase(service)}\n` +
-      `🌍 *দেশ:* ${countryData.flag} ${countryData.name} (${countryData.cc})\n` +
-      `📌 *মোড:* Add Numbers (নতুন নম্বর যুক্ত হবে)\n\n` +
+      `🌍 *দেশ:* ${countryData.flag} ${countryData.name}${ccInfo}\n` +
+      `📊 *বর্তমান নম্বর:* ${countryData.numbers.length} টি\n` +
+      `📌 *মোড:* Add Numbers (আগের নম্বরের সাথে যুক্ত হবে)\n\n` +
       `এখন সরাসরি মেসেজে নম্বরগুলো পেস্ট করে পাঠান (প্রতি লাইনে ১টি নম্বর) অথবা একটি *.txt* ফাইল পাঠান।`,
     {
       parse_mode: "Markdown",
@@ -1157,13 +1267,15 @@ bot.action(/^adm_mode:(.+):(.+):(replace|append)$/, async (ctx) => {
   const modeLabel =
     mode === "replace"
       ? "Replace List (আগের নম্বর বদলে নতুন নম্বর বসবে)"
-      : "Add Numbers (নতুন নম্বর যুক্ত হবে)";
+      : "Add Numbers (আগের নম্বরের সাথে নতুন নম্বর যুক্ত হবে)";
 
+  const ccInfo = countryData.cc ? ` (${countryData.cc})` : "";
   await ctx.editMessageText(
     `🟩 *নাম্বার সেট করুন*\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `${getServiceEmoji(service)} *সার্ভিস:* ${titleCase(service)}\n` +
-      `🌍 *দেশ:* ${countryData.flag} ${countryData.name} (${countryData.cc})\n` +
+      `🌍 *দেশ:* ${countryData.flag} ${countryData.name}${ccInfo}\n` +
+      `📊 *বর্তমান নম্বর:* ${countryData.numbers.length} টি\n` +
       `📌 *মোড:* ${modeLabel}\n\n` +
       `এখন নম্বরগুলো মেসেজে পেস্ট করে পাঠান অথবা *.txt* ফাইল পাঠান।`,
     {
@@ -1207,18 +1319,26 @@ bot.on("document", async (ctx) => {
       return ctx.reply("🟨 ⚠️ ফাইলে কোনো বৈধ নম্বর পাওয়া যায়নি।");
     }
 
+    const beforeCount = target.numbers.length;
     target.numbers =
-      st.mode === "replace" ? parsed : [...target.numbers, ...parsed];
+      st.mode === "replace"
+        ? mergeNumbersAppend([], parsed)
+        : mergeNumbersAppend(target.numbers, parsed);
+    const actualAdded =
+      st.mode === "replace"
+        ? target.numbers.length
+        : Math.max(0, target.numbers.length - beforeCount);
 
     adminState.delete(uid);
     const notifyStats = await notifyUsersAboutNewNumbers(
       st.service,
       target,
-      parsed.length
+      actualAdded || parsed.length
     );
 
+    const ccInfo = target.cc ? ` (${target.cc})` : "";
     await ctx.reply(
-      `🟢 ✅ সফলভাবে *${parsed.length}* টি নম্বর (${target.cc} কোডসহ) *${titleCase(st.service)} (${target.flag} ${target.name})* এ সেট করা হয়েছে!\n` +
+      `🟢 ✅ সফলভাবে *${actualAdded || parsed.length}* টি নম্বর *${titleCase(st.service)} (${target.flag} ${target.name}${ccInfo})* এ যুক্ত হয়েছে!\n` +
         `📊 মোট নম্বর: *${target.numbers.length}* টি\n` +
         `🔔 নোটিফিকেশন পাঠানো হয়েছে: *${notifyStats.sent}* জন ইউজারকে।`,
       { parse_mode: "Markdown" }
@@ -1293,12 +1413,15 @@ bot.action(/^service:(.+)$/, async (ctx) => {
     );
   }
 
-  const countryButtons = availableCountries.map(([key, data]) => [
-    Markup.button.callback(
-      `🟦 ${data.flag} ${data.name} (${data.cc})`,
-      `country:${service}:${key}`
-    ),
-  ]);
+  const countryButtons = availableCountries.map(([key, data]) => {
+    const ccLabel = data.cc ? ` (${data.cc})` : "";
+    return [
+      Markup.button.callback(
+        `🟦 ${data.flag} ${data.name}${ccLabel}`,
+        `country:${service}:${key}`
+      ),
+    ];
+  });
   countryButtons.push([
     Markup.button.callback("⬜ ⬅️ Back to Services", "back_services"),
   ]);
@@ -1345,7 +1468,7 @@ bot.action(/^country:(.+):(.+)$/, async (ctx) => {
   const view = buildNumbersView(uid, service, countryKey, customList);
   if (view) {
     await ctx.editMessageText(view.text, view.extra);
-    const activePhone = normalizeNumberWithCc(
+    const activePhone = normalizeNumberForStorage(
       apiPhone || countryData.numbers[0],
       countryData.cc
     );
@@ -1393,7 +1516,7 @@ bot.action(/^change_num:(.+):(.+)$/, async (ctx) => {
         ? countryData.numbers[current.offset % countryData.numbers.length]
         : null);
     const activePhone = rawActive
-      ? normalizeNumberWithCc(rawActive, countryData.cc)
+      ? normalizeNumberForStorage(rawActive, countryData.cc)
       : null;
     if (activePhone) {
       startOtpWatcher(ctx, service, countryData, activePhone);
@@ -1554,25 +1677,26 @@ bot.on("text", async (ctx) => {
     }
 
     registerServiceInOrder(st.service);
-    const existingNums =
-      numbersDatabase[st.service][resolved.cKey]?.numbers || [];
+    const existingEntry = numbersDatabase[st.service][resolved.cKey];
     numbersDatabase[st.service][resolved.cKey] = {
       name: resolved.name,
       flag: resolved.flag,
-      cc: resolved.cc,
-      numbers: existingNums,
+      cc: resolved.cc || existingEntry?.cc || "",
+      numbers: existingEntry?.numbers || [],
     };
 
+    const savedCountry = numbersDatabase[st.service][resolved.cKey];
     const srvName = titleCase(st.service);
+    const ccInfo = savedCountry.cc ? ` (${savedCountry.cc})` : "";
     adminState.delete(uid);
     return ctx.reply(
-      `🟢 ✅ *${srvName}* এ *${resolved.flag} ${resolved.name} (${resolved.cc})* অটো কান্ট্রি কোডসহ যুক্ত হয়েছে! এখন নম্বর অ্যাড করুন:`,
+      `🟢 ✅ *${srvName}* এ *${savedCountry.flag} ${savedCountry.name}${ccInfo}* যুক্ত হয়েছে! এখন নম্বর অ্যাড করুন:`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [
             Markup.button.callback(
-              `🟩 📄 ${resolved.name} এ নম্বর অ্যাড করুন`,
+              `🟩 📄 ${savedCountry.name} এ নম্বর অ্যাড করুন`,
               `adm_cnt:${st.service}:${resolved.cKey}`
             ),
           ],
@@ -1591,18 +1715,26 @@ bot.on("text", async (ctx) => {
       return ctx.reply("🟨 ⚠️ বৈধ নম্বর পাওয়া যায়নি। প্রতি লাইনে ১টি নম্বর দিন।");
     }
 
+    const beforeCount = target.numbers.length;
     target.numbers =
-      st.mode === "replace" ? parsed : [...target.numbers, ...parsed];
+      st.mode === "replace"
+        ? mergeNumbersAppend([], parsed)
+        : mergeNumbersAppend(target.numbers, parsed);
+    const actualAdded =
+      st.mode === "replace"
+        ? target.numbers.length
+        : Math.max(0, target.numbers.length - beforeCount);
 
     adminState.delete(uid);
     const notifyStats = await notifyUsersAboutNewNumbers(
       st.service,
       target,
-      parsed.length
+      actualAdded || parsed.length
     );
 
+    const ccInfo = target.cc ? ` (${target.cc})` : "";
     return ctx.reply(
-      `🟢 ✅ *${parsed.length}* টি নম্বর (${target.cc} কোডসহ) *${titleCase(st.service)} (${target.flag} ${target.name})* এ যুক্ত হয়েছে!\n` +
+      `🟢 ✅ *${actualAdded || parsed.length}* টি নম্বর *${titleCase(st.service)} (${target.flag} ${target.name}${ccInfo})* এ যুক্ত হয়েছে!\n` +
         `📊 মোট নম্বর: *${target.numbers.length}* টি\n` +
         `🔔 নোটিফিকেশন পাঠানো হয়েছে: *${notifyStats.sent}* জন ইউজারকে।`,
       { parse_mode: "Markdown" }
