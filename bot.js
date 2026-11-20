@@ -65,6 +65,23 @@ const COUNTRY_LOOKUP = {
   egypt: { name: "Egypt", flag: "🇪🇬", cc: "+20" },
   মিশর: { name: "Egypt", flag: "🇪🇬", cc: "+20" },
 
+  georgia: { name: "Georgia", flag: "🇬🇪", cc: "+995" },
+  guatemala: { name: "Guatemala", flag: "🇬🇹", cc: "+502" },
+  guinea: { name: "Guinea", flag: "🇬🇳", cc: "+224" },
+  guinea_bissau: { name: "Guinea Bissau", flag: "🇬🇼", cc: "+245" },
+  haiti: { name: "Haiti", flag: "🇭🇹", cc: "+509" },
+  iran: { name: "Iran", flag: "🇮🇷", cc: "+98" },
+  laos: { name: "Laos", flag: "🇱🇦", cc: "+856" },
+  liberia: { name: "Liberia", flag: "🇱🇷", cc: "+231" },
+  maldives: { name: "Maldives", flag: "🇲🇻", cc: "+960" },
+  mali: { name: "Mali", flag: "🇲🇱", cc: "+223" },
+  senegal: { name: "Senegal", flag: "🇸🇳", cc: "+221" },
+  sudan: { name: "Sudan", flag: "🇸🇩", cc: "+249" },
+  tajikistan: { name: "Tajikistan", flag: "🇹🇯", cc: "+992" },
+  togo: { name: "Togo", flag: "🇹🇬", cc: "+228" },
+  yemen: { name: "Yemen", flag: "🇾🇪", cc: "+967" },
+  zambia: { name: "Zambia", flag: "🇿🇲", cc: "+260" },
+
   indonesia: { name: "Indonesia", flag: "🇮🇩", cc: "+62" },
   ইন্দোনেশিয়া: { name: "Indonesia", flag: "🇮🇩", cc: "+62" },
 
@@ -291,9 +308,7 @@ function resolveCountryDetails(rawInput) {
   if (!cKey) return null;
 
   const matched = COUNTRY_LOOKUP[cKey];
-  const canonicalKey = matched
-    ? makeKey(matched.name)
-    : cKey;
+  const canonicalKey = matched ? makeKey(matched.name) : cKey;
   const name = matched ? matched.name : titleCase(rawName);
   const flag =
     parts[1] && parts[1].length > 0 ? parts[1] : matched?.flag || "🏳️";
@@ -306,7 +321,6 @@ function resolveCountryDetails(rawInput) {
     }
   }
 
-  // কোনো কান্ট্রি কোড না পেলে জোর করে +1 বসানো হবে না, বরং ফাঁকা/অটো রাখা হবে
   return { cKey: canonicalKey, name, flag, cc };
 }
 
@@ -437,6 +451,7 @@ async function notifyUsersAboutNewNumbers(serviceKey, countryData, addedCount) {
   return { sent, failed };
 }
 
+// --- ১ নম্বর ছবির মতো মেইন কাস্টম কিবোর্ড প্যাড ---
 function mainKeyboard(userId) {
   const rows = [
     ["📞 GET NUMBER"],
@@ -1392,19 +1407,21 @@ async function showServicesMenu(ctx, isEdit = false) {
 
 bot.hears("📞 GET NUMBER", (ctx) => showServicesMenu(ctx, false));
 
+// ২ নম্বর ছবির মতো ২ কলাম গ্রিডে ইউজারের সিলেক্ট করা দেশগুলো দেখানো হবে
 bot.action(/^service:(.+)$/, async (ctx) => {
   const ok = await ensureVerifiedAccess(ctx);
   if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
 
   await ctx.answerCbQuery();
   const service = ctx.match[1];
-  const countries = numbersDatabase[service];
+  const countries = numbersDatabase[service] || {};
 
-  const availableCountries = Object.entries(countries || {}).filter(
+  // অ্যাডমিন থেকে যে দেশগুলো সিলেক্ট/যোগ করা হয়েছে (যাদের নম্বর আছে) সেগুলো ২ কলামে সাজাবে
+  const selectedCountries = Object.entries(countries).filter(
     ([, data]) => Array.isArray(data.numbers) && data.numbers.length > 0
   );
 
-  if (availableCountries.length === 0) {
+  if (selectedCountries.length === 0) {
     return ctx.editMessageText(
       "🟥 ❌ এই সার্ভিসের জন্য বর্তমানে কোনো নাম্বার সেট করা নেই।",
       Markup.inlineKeyboard([
@@ -1413,25 +1430,41 @@ bot.action(/^service:(.+)$/, async (ctx) => {
     );
   }
 
-  const countryButtons = availableCountries.map(([key, data]) => {
-    const ccLabel = data.cc ? ` (${data.cc})` : "";
-    return [
+  const countryGrid = [];
+  for (let i = 0; i < selectedCountries.length; i += 2) {
+    const row = [];
+    const [k1, d1] = selectedCountries[i];
+    row.push(
       Markup.button.callback(
-        `🟦 ${data.flag} ${data.name}${ccLabel}`,
-        `country:${service}:${key}`
-      ),
-    ];
-  });
-  countryButtons.push([
+        `${d1.flag} ${d1.name}`,
+        `country:${service}:${k1}`
+      )
+    );
+
+    if (selectedCountries[i + 1]) {
+      const [k2, d2] = selectedCountries[i + 1];
+      row.push(
+        Markup.button.callback(
+          `${d2.flag} ${d2.name}`,
+          `country:${service}:${k2}`
+        )
+      );
+    }
+    countryGrid.push(row);
+  }
+
+  countryGrid.push([
     Markup.button.callback("⬜ ⬅️ Back to Services", "back_services"),
   ]);
 
-  const serviceTitle = titleCase(service);
+  const serviceTitle = titleCase(service).toUpperCase();
   await ctx.editMessageText(
-    `🟦 *${serviceTitle}* এর জন্য দেশ নির্বাচন করুন:`,
+    `🌍 *${serviceTitle} — SELECT COUNTRY*\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `নিচ থেকে আপনার কাঙ্ক্ষিত দেশ সিলেক্ট করুন:`,
     {
       parse_mode: "Markdown",
-      ...Markup.inlineKeyboard(countryButtons),
+      ...Markup.inlineKeyboard(countryGrid),
     }
   );
 });
