@@ -15,7 +15,6 @@ const FIREBASE_DB_URL =
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// ইউজার ফ্লোর ক্রম: WhatsApp -> Facebook -> Telegram -> Instagram -> Imo
 const USER_SERVICE_ORDER = [
   "whatsapp",
   "facebook",
@@ -24,7 +23,6 @@ const USER_SERVICE_ORDER = [
   "imo",
 ];
 
-// অ্যাডমিন ফ্লোর ক্রম: WhatsApp -> Telegram -> Facebook -> Instagram -> Imo
 const ADMIN_SERVICE_ORDER = [
   "whatsapp",
   "telegram",
@@ -39,13 +37,26 @@ const numbersDatabase = {
       name: "Cuba",
       flag: "🇨🇺",
       cc: "+53",
-      numbers: ["5363156365", "5363156485", "5363156512"],
+      numbers: [
+        "5363156365",
+        "5363156485",
+        "5363156512",
+        "5363156601",
+        "5363156602",
+        "5363156603",
+      ],
     },
     tanzania: {
       name: "Tanzania",
       flag: "🇹🇿",
       cc: "+255",
-      numbers: ["255650999626", "255650999627", "255650999628"],
+      numbers: [
+        "255650999626",
+        "255650999627",
+        "255650999628",
+        "255650999629",
+        "255650999630",
+      ],
     },
   },
   facebook: {
@@ -53,7 +64,7 @@ const numbersDatabase = {
       name: "Cuba",
       flag: "🇨🇺",
       cc: "+53",
-      numbers: ["5363157301", "5363157302", "5363157303"],
+      numbers: ["5363157301", "5363157302", "5363157303", "5363157304"],
     },
   },
   telegram: {
@@ -61,7 +72,7 @@ const numbersDatabase = {
       name: "Cuba",
       flag: "🇨🇺",
       cc: "+53",
-      numbers: ["5363157101", "5363157102", "5363157103"],
+      numbers: ["5363157101", "5363157102", "5363157103", "5363157104"],
     },
   },
   instagram: {
@@ -69,7 +80,7 @@ const numbersDatabase = {
       name: "Cuba",
       flag: "🇨🇺",
       cc: "+53",
-      numbers: ["5363157201", "5363157202", "5363157203"],
+      numbers: ["5363157201", "5363157202", "5363157203", "5363157204"],
     },
   },
   imo: {
@@ -77,7 +88,7 @@ const numbersDatabase = {
       name: "Cuba",
       flag: "🇨🇺",
       cc: "+53",
-      numbers: ["5363157401", "5363157402", "5363157403"],
+      numbers: ["5363157401", "5363157402", "5363157403", "5363157404"],
     },
   },
 };
@@ -167,7 +178,7 @@ function getOrderedServices(preferredOrder) {
 
 function parseNumbersFromText(rawText) {
   return rawText
-    .split(/\r?\n/)
+    .split(/[\r\n,]+/)
     .map((line) => line.replace(/[^\d]/g, "").trim())
     .filter((num) => num.length >= 6);
 }
@@ -224,8 +235,13 @@ function mainKeyboard(userId) {
 function getThreeNumbers(list, offset = 0) {
   if (!list || list.length === 0) return [];
   const result = [];
-  for (let i = 0; i < Math.min(3, list.length); i++) {
-    result.push(list[(offset + i) % list.length]);
+  const count = Math.min(3, list.length);
+  for (let i = 0; i < count; i++) {
+    const idx = ((offset % list.length) + list.length + i) % list.length;
+    const candidate = list[idx];
+    if (!result.includes(candidate)) {
+      result.push(candidate);
+    }
   }
   return result;
 }
@@ -400,7 +416,11 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
   const countryData = numbersDatabase[service]?.[countryKey];
   if (!countryData) return null;
 
-  const session = userSession.get(uid) || { offset: 0, removeCC: false };
+  const session = userSession.get(uid) || {
+    offset: 0,
+    removeCC: false,
+    batch: 1,
+  };
   const pool =
     Array.isArray(customNumbers) && customNumbers.length > 0
       ? customNumbers
@@ -452,7 +472,7 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
     ? "🟢 ⚡ Live API"
     : "🟦 📦 Local Pool";
   const text =
-    `💠 ${countryData.flag} *${serviceTitle} Number Assigned* (${sourceBadge})\n` +
+    `💠 ${countryData.flag} *${serviceTitle} Number Assigned* (${sourceBadge} • #${session.batch || 1})\n` +
     `🟡 *Waiting for OTP....*\n\n` +
     `_(নাম্বারের ওপর চাপ দিলেই কপি হয়ে যাবে)_`;
 
@@ -773,7 +793,7 @@ bot.action(/^adm_cnt_del:(.+):(.+)$/, async (ctx) => {
   );
 });
 
-// --- UPLOAD NUMBERS (Service -> Country -> Numbers) ---
+// --- UPLOAD NUMBERS (Service -> Country -> Direct Add/Replace) ---
 bot.action("adm_menu:numbers", async (ctx) => {
   trackUser(ctx);
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
@@ -800,7 +820,7 @@ bot.action("adm_menu:numbers", async (ctx) => {
   await ctx.editMessageText(
     "🟩 *UPLOAD NUMBERS — ধাপ ১: সার্ভিস সিলেক্ট করুন*\n" +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "প্রথমে সার্ভিস সিলেক্ট করুন, তারপর দেশ এবং এরপর নম্বর সেট করবেন:",
+      "আগে সার্ভিস সিলেক্ট করুন, তারপর দেশ, এরপর নম্বর পাঠাবেন:",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(buttons),
@@ -835,7 +855,7 @@ bot.action(/^adm_srv:(.+)$/, async (ctx) => {
   await ctx.editMessageText(
     `🟦 *${titleCase(service)} — ধাপ ২: দেশ সিলেক্ট করুন*\n` +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "যে দেশে নম্বর সেট করবেন সেই দেশ সিলেক্ট করুন:",
+      "যে দেশে নম্বর অ্যাড করবেন সেই দেশে চাপ দিন:",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(buttons),
@@ -848,22 +868,30 @@ bot.action(/^adm_cnt:(.+):(.+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
   const [, service, countryKey] = ctx.match;
+  const countryData = numbersDatabase[service]?.[countryKey];
+  if (!countryData) return;
+
+  adminState.set(ctx.from.id, {
+    step: "upload_numbers",
+    service,
+    countryKey,
+    mode: "append",
+  });
 
   await ctx.editMessageText(
-    `🟩 *${titleCase(service)} - ${countryKey.toUpperCase()} — ধাপ ৩: নম্বর সেট করুন*\n` +
-      `• *Replace List*: আগের নম্বর মুছে নতুন ফাইল/লিস্ট বসাবে\n` +
-      `• *Add Numbers*: আগের নম্বরের সাথে নতুন নম্বর যোগ করবে`,
+    `🟩 *নাম্বার অ্যাড করুন*\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `${getServiceEmoji(service)} *সার্ভিস:* ${titleCase(service)}\n` +
+      `🌍 *দেশ:* ${countryData.flag} ${countryData.name} (${countryData.cc})\n` +
+      `📌 *মোড:* Add Numbers (নতুন নম্বর যুক্ত হবে)\n\n` +
+      `এখন সরাসরি মেসেজে নম্বরগুলো পেস্ট করে পাঠান (প্রতি লাইনে ১টি নম্বর) অথবা একটি *.txt* ফাইল পাঠান।`,
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
         [
           Markup.button.callback(
-            "🟨 ♻️ Replace List",
+            "🟨 ♻️ Switch to Replace List",
             `adm_mode:${service}:${countryKey}:replace`
-          ),
-          Markup.button.callback(
-            "🟩 ➕ Add Numbers",
-            `adm_mode:${service}:${countryKey}:append`
           ),
         ],
         [Markup.button.callback("⬜ ⬅️ Back", `adm_srv:${service}`)],
@@ -877,6 +905,8 @@ bot.action(/^adm_mode:(.+):(.+):(replace|append)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
   const [, service, countryKey, mode] = ctx.match;
+  const countryData = numbersDatabase[service]?.[countryKey];
+  if (!countryData) return;
 
   adminState.set(ctx.from.id, {
     step: "upload_numbers",
@@ -885,11 +915,32 @@ bot.action(/^adm_mode:(.+):(.+):(replace|append)$/, async (ctx) => {
     mode,
   });
 
+  const modeLabel =
+    mode === "replace"
+      ? "Replace List (আগের নম্বর বদলে নতুন নম্বর বসবে)"
+      : "Add Numbers (নতুন নম্বর যুক্ত হবে)";
+
   await ctx.editMessageText(
-    `🟩 এখন *${titleCase(service)} (${countryKey.toUpperCase()})* এর নম্বর পাঠান:\n` +
-      `1️⃣ একটি *.txt* ফাইল পাঠান (প্রতি লাইনে ১টি নম্বর), অথবা\n` +
-      `2️⃣ সরাসরি মেসেজে নম্বরগুলো পেস্ট করে পাঠান (প্রতি লাইনে ১টি নম্বর)।`,
-    { parse_mode: "Markdown" }
+    `🟩 *নাম্বার সেট করুন*\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `${getServiceEmoji(service)} *সার্ভিস:* ${titleCase(service)}\n` +
+      `🌍 *দেশ:* ${countryData.flag} ${countryData.name} (${countryData.cc})\n` +
+      `📌 *মোড:* ${modeLabel}\n\n` +
+      `এখন নম্বরগুলো মেসেজে পেস্ট করে পাঠান অথবা *.txt* ফাইল পাঠান।`,
+    {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback(
+            mode === "replace"
+              ? "🟩 ➕ Switch to Add Numbers"
+              : "🟨 ♻️ Switch to Replace List",
+            `adm_mode:${service}:${countryKey}:${mode === "replace" ? "append" : "replace"}`
+          ),
+        ],
+        [Markup.button.callback("⬜ ⬅️ Back", `adm_srv:${service}`)],
+      ]),
+    }
   );
 });
 
@@ -1033,7 +1084,7 @@ bot.action(/^country:(.+):(.+)$/, async (ctx) => {
   const countryData = numbersDatabase[service]?.[countryKey];
   if (!countryData) return;
 
-  userSession.set(uid, { offset: 0, removeCC: false });
+  userSession.set(uid, { offset: 0, removeCC: false, batch: 1 });
   const apiPhone = await fetchNumberFromPanelApi(service, countryData);
   const customList = apiPhone ? [apiPhone] : null;
 
@@ -1049,22 +1100,34 @@ bot.action(/^country:(.+):(.+)$/, async (ctx) => {
 
 bot.action(/^change_num:(.+):(.+)$/, async (ctx) => {
   trackUser(ctx);
-  await ctx.answerCbQuery("নতুন নাম্বার লোড হচ্ছে...");
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
   const countryData = numbersDatabase[service]?.[countryKey];
-  if (!countryData) return;
+  if (!countryData) {
+    return ctx.answerCbQuery("দেশ পাওয়া যায়নি");
+  }
 
-  const current = userSession.get(uid) || { offset: 0, removeCC: false };
+  const current = userSession.get(uid) || {
+    offset: 0,
+    removeCC: false,
+    batch: 1,
+  };
   current.offset += 3;
+  current.batch += 1;
   userSession.set(uid, current);
+
+  await ctx.answerCbQuery("নতুন নাম্বার লোড হচ্ছে...");
 
   const apiPhone = await fetchNumberFromPanelApi(service, countryData);
   const customList = apiPhone ? [apiPhone] : null;
 
   const view = buildNumbersView(uid, service, countryKey, customList);
   if (view) {
-    await ctx.editMessageText(view.text, view.extra);
+    try {
+      await ctx.editMessageText(view.text, view.extra);
+    } catch (e) {
+      await ctx.reply(view.text, view.extra);
+    }
     const activePhone =
       apiPhone ||
       (countryData.numbers.length > 0
@@ -1082,7 +1145,11 @@ bot.action(/^toggle_cc:(.+):(.+)$/, async (ctx) => {
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
 
-  const current = userSession.get(uid) || { offset: 0, removeCC: false };
+  const current = userSession.get(uid) || {
+    offset: 0,
+    removeCC: false,
+    batch: 1,
+  };
   current.removeCC = !current.removeCC;
   userSession.set(uid, current);
 
