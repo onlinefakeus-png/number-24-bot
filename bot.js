@@ -15,83 +15,9 @@ const FIREBASE_DB_URL =
 
 const bot = new Telegraf(BOT_TOKEN);
 
-const USER_SERVICE_ORDER = [
-  "whatsapp",
-  "facebook",
-  "telegram",
-  "instagram",
-  "imo",
-];
-
-const ADMIN_SERVICE_ORDER = [
-  "whatsapp",
-  "telegram",
-  "facebook",
-  "instagram",
-  "imo",
-];
-
-const numbersDatabase = {
-  whatsapp: {
-    cuba: {
-      name: "Cuba",
-      flag: "🇨🇺",
-      cc: "+53",
-      numbers: [
-        "5363156365",
-        "5363156485",
-        "5363156512",
-        "5363156601",
-        "5363156602",
-        "5363156603",
-      ],
-    },
-    tanzania: {
-      name: "Tanzania",
-      flag: "🇹🇿",
-      cc: "+255",
-      numbers: [
-        "255650999626",
-        "255650999627",
-        "255650999628",
-        "255650999629",
-        "255650999630",
-      ],
-    },
-  },
-  facebook: {
-    cuba: {
-      name: "Cuba",
-      flag: "🇨🇺",
-      cc: "+53",
-      numbers: ["5363157301", "5363157302", "5363157303", "5363157304"],
-    },
-  },
-  telegram: {
-    cuba: {
-      name: "Cuba",
-      flag: "🇨🇺",
-      cc: "+53",
-      numbers: ["5363157101", "5363157102", "5363157103", "5363157104"],
-    },
-  },
-  instagram: {
-    cuba: {
-      name: "Cuba",
-      flag: "🇨🇺",
-      cc: "+53",
-      numbers: ["5363157201", "5363157202", "5363157203", "5363157204"],
-    },
-  },
-  imo: {
-    cuba: {
-      name: "Cuba",
-      flag: "🇨🇺",
-      cc: "+53",
-      numbers: ["5363157401", "5363157402", "5363157403", "5363157404"],
-    },
-  },
-};
+// শুরুতে একদম ফাঁকা — আপনি যে সার্ভিস, দেশ ও নম্বর সেট করবেন, ইউজার শুধু সেটাই দেখবে
+const numbersDatabase = {};
+const serviceOrder = [];
 
 const knownUsers = new Set();
 const userSession = new Map();
@@ -143,11 +69,43 @@ function titleCase(str) {
     .join(" ");
 }
 
+function registerServiceInOrder(srvKey) {
+  if (!numbersDatabase[srvKey]) {
+    numbersDatabase[srvKey] = {};
+  }
+  if (!serviceOrder.includes(srvKey)) {
+    serviceOrder.push(srvKey);
+  }
+}
+
+function removeServiceFromOrder(srvKey) {
+  delete numbersDatabase[srvKey];
+  const idx = serviceOrder.indexOf(srvKey);
+  if (idx !== -1) {
+    serviceOrder.splice(idx, 1);
+  }
+}
+
+function getConfiguredServices() {
+  const active = [];
+  for (const key of serviceOrder) {
+    if (numbersDatabase[key] && !active.includes(key)) {
+      active.push(key);
+    }
+  }
+  for (const key of Object.keys(numbersDatabase)) {
+    if (!active.includes(key)) {
+      active.push(key);
+    }
+  }
+  return active;
+}
+
 function getServiceEmoji(serviceKey) {
   const map = {
     whatsapp: "🟢",
-    facebook: "🔷",
     telegram: "🔵",
+    facebook: "🔷",
     instagram: "🟣",
     imo: "🟠",
     tiktok: "🔴",
@@ -155,25 +113,6 @@ function getServiceEmoji(serviceKey) {
     signal: "🟦",
   };
   return map[serviceKey] || "💠";
-}
-
-function getOrderedServices(preferredOrder) {
-  const allKeys = Object.keys(numbersDatabase);
-  const ordered = [];
-
-  for (const key of preferredOrder) {
-    if (allKeys.includes(key) && !ordered.includes(key)) {
-      ordered.push(key);
-    }
-  }
-
-  for (const key of allKeys) {
-    if (!ordered.includes(key)) {
-      ordered.push(key);
-    }
-  }
-
-  return ordered;
 }
 
 function parseNumbersFromText(rawText) {
@@ -425,6 +364,11 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
     Array.isArray(customNumbers) && customNumbers.length > 0
       ? customNumbers
       : countryData.numbers;
+
+  if (!pool || pool.length === 0) {
+    return null;
+  }
+
   const selected = getThreeNumbers(pool, session.offset);
   const ccDigits = (countryData.cc || "").replace("+", "");
 
@@ -613,7 +557,7 @@ bot.action("adm_menu:services", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
 
-  const keys = getOrderedServices(ADMIN_SERVICE_ORDER);
+  const keys = getConfiguredServices();
   const rows = [
     [Markup.button.callback("🟩 ➕ Add New Service", "adm_srv_add")],
   ];
@@ -633,7 +577,7 @@ bot.action("adm_menu:services", async (ctx) => {
   await ctx.editMessageText(
     "🟦 *SERVICE MANAGEMENT*\n" +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "নতুন সার্ভিস যুক্ত করুন অথবা রিমুভ করতে লাল বাটনে চাপুন:",
+      "আপনি যে ক্রমে সার্ভিস যোগ করবেন, ইউজার ঠিক সেই ক্রমেই দেখবে:",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(rows),
@@ -648,7 +592,7 @@ bot.action("adm_srv_add", async (ctx) => {
   adminState.set(ctx.from.id, { step: "add_service" });
 
   await ctx.editMessageText(
-    "🟩 *ADD NEW SERVICE*\nসার্ভিসের নাম লিখে পাঠান (যেমন: `WhatsApp`, `Telegram`, `Facebook`, `Instagram`, `Imo` বা অন্য কোনোটি):",
+    "🟩 *ADD NEW SERVICE*\nসার্ভিসের নাম লিখে পাঠান (যেমন: `WhatsApp`, `Telegram`, `Facebook`, `Instagram`, `Imo` বা অন্য কোনো নাম):",
     { parse_mode: "Markdown" }
   );
 });
@@ -663,7 +607,7 @@ bot.action(/^adm_srv_del:(.+)$/, async (ctx) => {
     return ctx.editMessageText("🟨 ⚠️ সার্ভিসটি পাওয়া যায়নি।");
   }
 
-  delete numbersDatabase[srvKey];
+  removeServiceFromOrder(srvKey);
   await ctx.editMessageText(
     `🟢 ✅ *${titleCase(srvKey)}* সার্ভিসটি রিমুভ করা হয়েছে।`,
     {
@@ -682,22 +626,14 @@ bot.action("adm_menu:countries", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
 
-  const keys = getOrderedServices(ADMIN_SERVICE_ORDER);
-  if (keys.length === 0) {
-    return ctx.editMessageText(
-      "🟨 ⚠️ কোনো সার্ভিস নেই। আগে সার্ভিস যুক্ত করুন।",
-      Markup.inlineKeyboard([
-        [Markup.button.callback("⬜ ⬅️ Back to Admin", "adm_home")],
-      ])
-    );
-  }
-
+  const keys = getConfiguredServices();
   const buttons = keys.map((k) => [
     Markup.button.callback(
       `🟦 ${getServiceEmoji(k)} ${titleCase(k)}`,
       `adm_cnt_srv:${k}`
     ),
   ]);
+  buttons.push([Markup.button.callback("🟩 ➕ Add New Service", "adm_srv_add")]);
   buttons.push([Markup.button.callback("⬜ ⬅️ Back to Admin", "adm_home")]);
 
   await ctx.editMessageText(
@@ -716,6 +652,7 @@ bot.action(/^adm_cnt_srv:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
   const srvKey = ctx.match[1];
+  registerServiceInOrder(srvKey);
   const countries = numbersDatabase[srvKey] || {};
 
   const rows = [
@@ -754,16 +691,17 @@ bot.action(/^adm_cnt_add:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
   const srvKey = ctx.match[1];
+  registerServiceInOrder(srvKey);
 
   adminState.set(ctx.from.id, { step: "add_country", service: srvKey });
 
   await ctx.editMessageText(
     `🟩 *ADD COUNTRY (${titleCase(srvKey)})*\n\n` +
-      `এই ফরম্যাটে লিখুন:\n` +
+      `দেশের নাম ও তথ্য লিখুন:\n` +
       `\`দেশের নাম, পতাকা, কান্ট্রি কোড\`\n\n` +
       `উদাহরণ:\n` +
       `\`Bangladesh, 🇧🇩, +880\`\n` +
-      `বা \`United States, 🇺🇸, +1\``,
+      `বা \`Cuba, 🇨🇺, +53\``,
     { parse_mode: "Markdown" }
   );
 });
@@ -793,34 +731,26 @@ bot.action(/^adm_cnt_del:(.+):(.+)$/, async (ctx) => {
   );
 });
 
-// --- UPLOAD NUMBERS (Service -> Country -> Direct Add/Replace) ---
+// --- UPLOAD NUMBERS (Service -> Country -> Numbers) ---
 bot.action("adm_menu:numbers", async (ctx) => {
   trackUser(ctx);
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
 
-  const keys = getOrderedServices(ADMIN_SERVICE_ORDER);
-  if (keys.length === 0) {
-    return ctx.editMessageText(
-      "🟨 ⚠️ আগে অন্তত ১টি সার্ভিস যুক্ত করুন।",
-      Markup.inlineKeyboard([
-        [Markup.button.callback("⬜ ⬅️ Back to Admin", "adm_home")],
-      ])
-    );
-  }
-
+  const keys = getConfiguredServices();
   const buttons = keys.map((k) => [
     Markup.button.callback(
       `🟩 ${getServiceEmoji(k)} ${titleCase(k)}`,
       `adm_srv:${k}`
     ),
   ]);
+  buttons.push([Markup.button.callback("🟦 ➕ Add New Service", "adm_srv_add")]);
   buttons.push([Markup.button.callback("⬜ ⬅️ Back to Admin", "adm_home")]);
 
   await ctx.editMessageText(
     "🟩 *UPLOAD NUMBERS — ধাপ ১: সার্ভিস সিলেক্ট করুন*\n" +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "আগে সার্ভিস সিলেক্ট করুন, তারপর দেশ, এরপর নম্বর পাঠাবেন:",
+      "আপনি যে সার্ভিস যোগ করেছেন সেটি সিলেক্ট করুন (অথবা নতুন সার্ভিস যোগ করুন):",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(buttons),
@@ -833,6 +763,7 @@ bot.action(/^adm_srv:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
   const service = ctx.match[1];
+  registerServiceInOrder(service);
   const countries = numbersDatabase[service] || {};
 
   const buttons = Object.entries(countries).map(([key, d]) => [
@@ -842,20 +773,18 @@ bot.action(/^adm_srv:(.+)$/, async (ctx) => {
     ),
   ]);
 
-  if (buttons.length === 0) {
-    buttons.push([
-      Markup.button.callback(
-        `🟩 ➕ Add Country to ${titleCase(service)}`,
-        `adm_cnt_add:${service}`
-      ),
-    ]);
-  }
+  buttons.push([
+    Markup.button.callback(
+      `🟩 ➕ Add Country to ${titleCase(service)}`,
+      `adm_cnt_add:${service}`
+    ),
+  ]);
   buttons.push([Markup.button.callback("⬜ ⬅️ Back", "adm_menu:numbers")]);
 
   await ctx.editMessageText(
-    `🟦 *${titleCase(service)} — ধাপ ২: দেশ সিলেক্ট করুন*\n` +
+    `🟦 *${titleCase(service)} — ধাপ ২: দেশ সিলেক্ট বা যুক্ত করুন*\n` +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "যে দেশে নম্বর অ্যাড করবেন সেই দেশে চাপ দিন:",
+      "যে দেশে নম্বর অ্যাড করবেন সেই দেশে চাপ দিন অথবা নতুন দেশ যোগ করুন:",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(buttons),
@@ -986,7 +915,7 @@ bot.on("document", async (ctx) => {
   }
 });
 
-// --- USER FLOW (Service -> Country -> Numbers) ---
+// --- USER FLOW (শুধু আপনি যা সেট করবেন, ইউজার সেটাই ও সেই ক্রমে দেখবে) ---
 bot.start((ctx) => {
   trackUser(ctx);
   ctx.reply("🟢 স্বাগতম! নিচের *GET NUMBER* বাটনে চাপ দিয়ে শুরু করুন:", {
@@ -997,9 +926,9 @@ bot.start((ctx) => {
 
 function showServicesMenu(ctx, isEdit = false) {
   trackUser(ctx);
-  const serviceKeys = getOrderedServices(USER_SERVICE_ORDER);
+  const serviceKeys = getConfiguredServices();
   if (serviceKeys.length === 0) {
-    const emptyText = "🟥 ❌ বর্তমানে কোনো সার্ভিস চালু নেই।";
+    const emptyText = "🟥 ❌ বর্তমানে কোনো সার্ভিস সেট করা হয়নি।";
     return isEdit ? ctx.editMessageText(emptyText) : ctx.reply(emptyText);
   }
 
@@ -1041,16 +970,20 @@ bot.action(/^service:(.+)$/, async (ctx) => {
   const service = ctx.match[1];
   const countries = numbersDatabase[service];
 
-  if (!countries || Object.keys(countries).length === 0) {
+  const availableCountries = Object.entries(countries || {}).filter(
+    ([, data]) => Array.isArray(data.numbers) && data.numbers.length > 0
+  );
+
+  if (availableCountries.length === 0) {
     return ctx.editMessageText(
-      "🟥 ❌ এই সার্ভিসের জন্য বর্তমানে কোনো দেশের নাম্বার সেট করা নেই।",
+      "🟥 ❌ এই সার্ভিসের জন্য বর্তমানে কোনো নাম্বার সেট করা নেই।",
       Markup.inlineKeyboard([
         [Markup.button.callback("⬜ ⬅️ Back to Services", "back_services")],
       ])
     );
   }
 
-  const countryButtons = Object.entries(countries).map(([key, data]) => [
+  const countryButtons = availableCountries.map(([key, data]) => [
     Markup.button.callback(
       `🟦 ${data.flag} ${data.name} (${data.cc})`,
       `country:${service}:${key}`
@@ -1082,7 +1015,14 @@ bot.action(/^country:(.+):(.+)$/, async (ctx) => {
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
   const countryData = numbersDatabase[service]?.[countryKey];
-  if (!countryData) return;
+  if (!countryData || !countryData.numbers || countryData.numbers.length === 0) {
+    return ctx.editMessageText(
+      "🟥 ❌ এই দেশে বর্তমানে কোনো নাম্বার নেই।",
+      Markup.inlineKeyboard([
+        [Markup.button.callback("⬜ ⬅️ Back to Services", "back_services")],
+      ])
+    );
+  }
 
   userSession.set(uid, { offset: 0, removeCC: false, batch: 1 });
   const apiPhone = await fetchNumberFromPanelApi(service, countryData);
@@ -1103,8 +1043,8 @@ bot.action(/^change_num:(.+):(.+)$/, async (ctx) => {
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
   const countryData = numbersDatabase[service]?.[countryKey];
-  if (!countryData) {
-    return ctx.answerCbQuery("দেশ পাওয়া যায়নি");
+  if (!countryData || !countryData.numbers || countryData.numbers.length === 0) {
+    return ctx.answerCbQuery("নাম্বার নেই");
   }
 
   const current = userSession.get(uid) || {
@@ -1217,17 +1157,27 @@ bot.on("text", async (ctx) => {
   if (st.step === "add_service") {
     const srvKey = makeKey(ctx.message.text);
     if (!srvKey) {
-      return ctx.reply("🟨 ⚠️ সঠিক সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` বা `Imo`)।", {
-        parse_mode: "Markdown",
-      });
+      return ctx.reply(
+        "🟨 ⚠️ সঠিক সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` বা `Telegram`)।",
+        { parse_mode: "Markdown" }
+      );
     }
-    if (!numbersDatabase[srvKey]) {
-      numbersDatabase[srvKey] = {};
-    }
+    registerServiceInOrder(srvKey);
     adminState.delete(uid);
     return ctx.reply(
-      `🟢 ✅ সার্ভিস *${titleCase(srvKey)}* যুক্ত হয়েছে! এখন *Manage Countries* থেকে এতে দেশ যোগ করতে পারবেন।`,
-      { parse_mode: "Markdown", ...adminMenuKeyboard() }
+      `🟢 ✅ সার্ভিস *${titleCase(srvKey)}* যুক্ত হয়েছে! এখন দেশ যোগ করতে পারবেন:`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              `🟩 ➕ ${titleCase(srvKey)} এ দেশ যোগ করুন`,
+              `adm_cnt_add:${srvKey}`
+            ),
+          ],
+          [Markup.button.callback("💠 🏠 Admin Panel", "adm_home")],
+        ]),
+      }
     );
   }
 
@@ -1246,10 +1196,7 @@ bot.on("text", async (ctx) => {
       );
     }
 
-    if (!numbersDatabase[st.service]) {
-      numbersDatabase[st.service] = {};
-    }
-
+    registerServiceInOrder(st.service);
     numbersDatabase[st.service][cKey] = {
       name: titleCase(nameRaw),
       flag,
@@ -1260,8 +1207,19 @@ bot.on("text", async (ctx) => {
     const srvName = titleCase(st.service);
     adminState.delete(uid);
     return ctx.reply(
-      `🟢 ✅ *${srvName}* এ *${flag} ${titleCase(nameRaw)} (${cc})* যুক্ত হয়েছে!`,
-      { parse_mode: "Markdown", ...adminMenuKeyboard() }
+      `🟢 ✅ *${srvName}* এ *${flag} ${titleCase(nameRaw)} (${cc})* যুক্ত হয়েছে! এখন নম্বর অ্যাড করুন:`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              `🟩 📄 ${titleCase(nameRaw)} এ নম্বর অ্যাড করুন`,
+              `adm_cnt:${st.service}:${cKey}`
+            ),
+          ],
+          [Markup.button.callback("💠 🏠 Admin Panel", "adm_home")],
+        ]),
+      }
     );
   }
 
