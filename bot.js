@@ -6,6 +6,15 @@ const BOT_TOKEN =
 
 const ADMIN_IDS = [8771921458];
 
+// শুরুতে ডিফল্ট ভ্যালু; পরে Admin Panel -> Group Control থেকে সরাসরি পরিবর্তন করতে পারবেন
+const groupConfig = {
+  mainGroupLink: process.env.MAIN_GROUP_LINK || "https://t.me/your_main_group_link",
+  mainGroupChatId: process.env.MAIN_GROUP_CHAT_ID || "",
+  otpGroupLink: process.env.OTP_GROUP_LINK || "https://t.me/your_otp_group_link",
+  otpGroupChatId: process.env.OTP_GROUP_CHAT_ID || "",
+  strictCheck: true,
+};
+
 let runtimePanelApiUrl = (process.env.PANEL_API_URL || "").trim();
 let runtimePanelApiKey = (process.env.PANEL_API_KEY || "").trim();
 
@@ -15,14 +24,58 @@ const FIREBASE_DB_URL =
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// শুরুতে একদম ফাঁকা — আপনি যে সার্ভিস, দেশ ও নম্বর সেট করবেন, ইউজার শুধু সেটাই দেখবে
 const numbersDatabase = {};
 const serviceOrder = [];
 
 const knownUsers = new Set();
+const verifiedUsers = new Set();
 const userSession = new Map();
 const adminState = new Map();
 const otpWatchers = new Map();
+
+const COUNTRY_AUTO_DATA = {
+  bangladesh: { name: "Bangladesh", flag: "🇧🇩", cc: "+880" },
+  india: { name: "India", flag: "🇮🇳", cc: "+91" },
+  pakistan: { name: "Pakistan", flag: "🇵🇰", cc: "+92" },
+  cuba: { name: "Cuba", flag: "🇨🇺", cc: "+53" },
+  tanzania: { name: "Tanzania", flag: "🇹🇿", cc: "+255" },
+  united_states: { name: "United States", flag: "🇺🇸", cc: "+1" },
+  usa: { name: "United States", flag: "🇺🇸", cc: "+1" },
+  us: { name: "United States", flag: "🇺🇸", cc: "+1" },
+  canada: { name: "Canada", flag: "🇨🇦", cc: "+1" },
+  united_kingdom: { name: "United Kingdom", flag: "🇬🇧", cc: "+44" },
+  uk: { name: "United Kingdom", flag: "🇬🇧", cc: "+44" },
+  egypt: { name: "Egypt", flag: "🇪🇬", cc: "+20" },
+  indonesia: { name: "Indonesia", flag: "🇮🇩", cc: "+62" },
+  malaysia: { name: "Malaysia", flag: "🇲🇾", cc: "+60" },
+  philippines: { name: "Philippines", flag: "🇵🇭", cc: "+63" },
+  vietnam: { name: "Vietnam", flag: "🇻🇳", cc: "+84" },
+  thailand: { name: "Thailand", flag: "🇹🇭", cc: "+66" },
+  brazil: { name: "Brazil", flag: "🇧🇷", cc: "+55" },
+  russia: { name: "Russia", flag: "🇷🇺", cc: "+7" },
+  germany: { name: "Germany", flag: "🇩🇪", cc: "+49" },
+  france: { name: "France", flag: "🇫🇷", cc: "+33" },
+  italy: { name: "Italy", flag: "🇮🇹", cc: "+39" },
+  spain: { name: "Spain", flag: "🇪🇸", cc: "+34" },
+  australia: { name: "Australia", flag: "🇦🇺", cc: "+61" },
+  saudi_arabia: { name: "Saudi Arabia", flag: "🇸🇦", cc: "+966" },
+  uae: { name: "United Arab Emirates", flag: "🇦🇪", cc: "+971" },
+  united_arab_emirates: { name: "United Arab Emirates", flag: "🇦🇪", cc: "+971" },
+  turkey: { name: "Turkey", flag: "🇹🇷", cc: "+90" },
+  nepal: { name: "Nepal", flag: "🇳🇵", cc: "+977" },
+  sri_lanka: { name: "Sri Lanka", flag: "🇱🇰", cc: "+94" },
+  nigeria: { name: "Nigeria", flag: "🇳🇬", cc: "+234" },
+  kenya: { name: "Kenya", flag: "🇰🇪", cc: "+254" },
+  south_africa: { name: "South Africa", flag: "🇿🇦", cc: "+27" },
+  morocco: { name: "Morocco", flag: "🇲🇦", cc: "+212" },
+  mexico: { name: "Mexico", flag: "🇲🇽", cc: "+52" },
+  colombia: { name: "Colombia", flag: "🇨🇴", cc: "+57" },
+  argentina: { name: "Argentina", flag: "🇦🇷", cc: "+54" },
+  peru: { name: "Peru", flag: "🇵🇪", cc: "+51" },
+  poland: { name: "Poland", flag: "🇵🇱", cc: "+48" },
+  netherlands: { name: "Netherlands", flag: "🇳🇱", cc: "+31" },
+  ukraine: { name: "Ukraine", flag: "🇺🇦", cc: "+380" },
+};
 
 function trackUser(ctx) {
   const uid = ctx?.from?.id;
@@ -33,6 +86,94 @@ function trackUser(ctx) {
 
 function isAdmin(userId) {
   return ADMIN_IDS.includes(userId);
+}
+
+function extractChatTargetFromLink(link) {
+  if (!link) return "";
+  const match = link.match(/t\.me\/(?!\+)([a-zA-Z0-9_]+)/);
+  return match ? `@${match[1]}` : "";
+}
+
+async function isMemberOfGroup(userId, explicitChatId, fallbackLink) {
+  if (!groupConfig.strictCheck) return true;
+  const target = (
+    explicitChatId ||
+    extractChatTargetFromLink(fallbackLink) ||
+    ""
+  ).trim();
+  if (!target) return true;
+
+  try {
+    const member = await bot.telegram.getChatMember(target, userId);
+    return ["member", "administrator", "creator"].includes(member.status);
+  } catch (err) {
+    console.error(`Group check failed for ${target}:`, err.message);
+    return false;
+  }
+}
+
+async function checkBothGroupsJoined(userId) {
+  if (isAdmin(userId)) return true;
+  const mainOk = await isMemberOfGroup(
+    userId,
+    groupConfig.mainGroupChatId,
+    groupConfig.mainGroupLink
+  );
+  const otpOk = await isMemberOfGroup(
+    userId,
+    groupConfig.otpGroupChatId,
+    groupConfig.otpGroupLink
+  );
+  return mainOk && otpOk;
+}
+
+function joinRequirementKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.url("📢 Join Main Group", groupConfig.mainGroupLink)],
+    [Markup.button.url("💬 Join OTP Group", groupConfig.otpGroupLink)],
+    [Markup.button.callback("✅ Verify", "verify_groups")],
+  ]);
+}
+
+async function promptJoinGroups(ctx, isEdit = false) {
+  const text =
+    "🔒 *বট ব্যবহারের আগে দুটি গ্রুপে জয়েন করুন*\n" +
+    "━━━━━━━━━━━━━━━━━━\n" +
+    "১️⃣ নিচের *Join Main Group* বাটনে চাপ দিয়ে মেইন গ্রুপে যুক্ত হোন\n" +
+    "২️⃣ *Join OTP Group* বাটনে চাপ দিয়ে ওটিপি গ্রুপে যুক্ত হোন\n" +
+    "৩️⃣ উভয় গ্রুপে যুক্ত হওয়ার পর নিচে *✅ Verify* বাটনে চাপ দিন।";
+
+  const extra = {
+    parse_mode: "Markdown",
+    ...joinRequirementKeyboard(),
+  };
+
+  if (isEdit) {
+    try {
+      return await ctx.editMessageText(text, extra);
+    } catch (e) {
+      return await ctx.reply(text, extra);
+    }
+  }
+  return ctx.reply(text, extra);
+}
+
+async function ensureVerifiedAccess(ctx) {
+  const uid = ctx?.from?.id;
+  if (!uid) return false;
+  trackUser(ctx);
+
+  if (isAdmin(uid)) return true;
+  if (verifiedUsers.has(uid)) return true;
+
+  const joined = await checkBothGroupsJoined(uid);
+  if (joined) {
+    verifiedUsers.add(uid);
+    return true;
+  }
+
+  await promptJoinGroups(ctx, false);
+  return false;
 }
 
 function getPanelApiUrl() {
@@ -67,6 +208,42 @@ function titleCase(str) {
     .split(/\s+/)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
+}
+
+function resolveCountryDetails(rawInput) {
+  const parts = rawInput.split(",").map((p) => p.trim());
+  const rawName = parts[0] || "";
+  const cKey = makeKey(rawName);
+  if (!cKey) return null;
+
+  const autoInfo = COUNTRY_AUTO_DATA[cKey];
+  const name = autoInfo ? autoInfo.name : titleCase(rawName);
+  const flag =
+    parts[1] && parts[1].length > 0 ? parts[1] : autoInfo?.flag || "🌍";
+
+  let cc = autoInfo?.cc || "";
+  if (parts[2]) {
+    const cleanCc = parts[2].replace(/[^\d+]/g, "").trim();
+    if (cleanCc) {
+      cc = cleanCc.startsWith("+") ? cleanCc : `+${cleanCc}`;
+    }
+  }
+  if (!cc) {
+    cc = "+1";
+  }
+
+  return { cKey, name, flag, cc };
+}
+
+function normalizeNumberWithCc(rawNum, cc) {
+  const digits = String(rawNum || "").replace(/[^\d]/g, "").trim();
+  if (!digits) return "";
+  const ccDigits = String(cc || "").replace(/[^\d]/g, "").trim();
+  if (!ccDigits) return digits;
+  if (digits.startsWith(ccDigits)) {
+    return digits;
+  }
+  return `${ccDigits}${digits}`;
 }
 
 function registerServiceInOrder(srvKey) {
@@ -115,10 +292,10 @@ function getServiceEmoji(serviceKey) {
   return map[serviceKey] || "💠";
 }
 
-function parseNumbersFromText(rawText) {
+function parseNumbersFromText(rawText, cc = "") {
   return rawText
     .split(/[\r\n,]+/)
-    .map((line) => line.replace(/[^\d]/g, "").trim())
+    .map((line) => normalizeNumberWithCc(line, cc))
     .filter((num) => num.length >= 6);
 }
 
@@ -137,7 +314,7 @@ async function notifyUsersAboutNewNumbers(serviceKey, countryData, addedCount) {
     `${srvEmoji} *সার্ভিস:* ${srvName}\n` +
     `🌍 *দেশ:* ${countryData.flag} ${countryData.name} (${countryData.cc})\n` +
     `🔢 *নতুন নাম্বার:* ${addedCount} টি\n\n` +
-    `এখনই *📞 GET NUMBER* থেকে নাম্বার নিতে পারবেন!`;
+    `এখনই *📞 GET NUMBER* থেকে কান্ট্রি কোডসহ নাম্বার নিতে পারবেন!`;
 
   let sent = 0;
   let failed = 0;
@@ -214,8 +391,8 @@ async function fetchNumberFromPanelApi(service, countryData) {
       data?.data?.number ||
       data?.data?.phone ||
       "";
-    const cleanPhone = String(rawPhone).replace(/[^\d]/g, "").trim();
-    return cleanPhone.length >= 6 ? cleanPhone : null;
+    const normalized = normalizeNumberWithCc(rawPhone, countryData.cc);
+    return normalized.length >= 6 ? normalized : null;
   } catch (err) {
     console.error("Panel API number fetch error:", err);
     return null;
@@ -328,7 +505,7 @@ function startOtpWatcher(ctx, service, countryData, phone) {
       const serviceLabel = service.toUpperCase();
       await bot.telegram.sendMessage(
         chatId,
-        `🟢 ${countryData.flag} *${serviceLabel}*  \`${phone}\`\n✅ *Code Received (চাপ দিয়ে কপি করুন):*`,
+        `🟢 ${countryData.flag} *${serviceLabel}*  \`+${phone}\`\n✅ *Code Received (চাপ দিয়ে কপি করুন):*`,
         {
           parse_mode: "Markdown",
           reply_markup: {
@@ -372,16 +549,17 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
   const selected = getThreeNumbers(pool, session.offset);
   const ccDigits = (countryData.cc || "").replace("+", "");
 
-  const rows = selected.map((fullNum) => {
-    const cleanNum =
-      session.removeCC && ccDigits && fullNum.startsWith(ccDigits)
-        ? fullNum.slice(ccDigits.length)
-        : `+${fullNum}`;
+  const rows = selected.map((rawNum) => {
+    const withCc = normalizeNumberWithCc(rawNum, countryData.cc);
+    const displayNum =
+      session.removeCC && ccDigits && withCc.startsWith(ccDigits)
+        ? withCc.slice(ccDigits.length)
+        : `+${withCc}`;
 
     return [
       {
-        text: `🟦 ${countryData.flag} 📋 ${cleanNum}`,
-        copy_text: { text: cleanNum },
+        text: `🟦 ${countryData.flag} 📋 ${displayNum}`,
+        copy_text: { text: displayNum },
       },
     ];
   });
@@ -407,7 +585,7 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
   rows.push([
     {
       text: "🟩 Otp Group",
-      url: "https://t.me/your_otp_group_link",
+      url: groupConfig.otpGroupLink,
     },
   ]);
 
@@ -416,9 +594,9 @@ function buildNumbersView(uid, service, countryKey, customNumbers = null) {
     ? "🟢 ⚡ Live API"
     : "🟦 📦 Local Pool";
   const text =
-    `💠 ${countryData.flag} *${serviceTitle} Number Assigned* (${sourceBadge} • #${session.batch || 1})\n` +
+    `💠 ${countryData.flag} *${serviceTitle} Number Assigned* (${countryData.cc} • ${sourceBadge} • #${session.batch || 1})\n` +
     `🟡 *Waiting for OTP....*\n\n` +
-    `_(নাম্বারের ওপর চাপ দিলেই কপি হয়ে যাবে)_`;
+    `_(কান্ট্রি কোডসহ নাম্বারের ওপর চাপ দিলেই কপি হয়ে যাবে)_`;
 
   return {
     text,
@@ -436,7 +614,10 @@ function adminMenuKeyboard() {
       Markup.button.callback("🟦 🧩 Manage Services", "adm_menu:services"),
       Markup.button.callback("🟨 🌍 Manage Countries", "adm_menu:countries"),
     ],
-    [Markup.button.callback("🟪 🔌 API Setup", "adm_menu:api_setup")],
+    [
+      Markup.button.callback("🟩 👥 Group Control", "adm_menu:groups"),
+      Markup.button.callback("🟪 🔌 API Setup", "adm_menu:api_setup"),
+    ],
   ]);
 }
 
@@ -461,6 +642,138 @@ function openAdminPanel(ctx, isEdit = false) {
     ...adminMenuKeyboard(),
   });
 }
+
+// --- GROUP CONTROL FROM ADMIN PANEL ---
+function showGroupControlMenu(ctx, isEdit = false) {
+  const mainIdText = groupConfig.mainGroupChatId
+    ? `\`${groupConfig.mainGroupChatId}\``
+    : "_Auto from link_";
+  const otpIdText = groupConfig.otpGroupChatId
+    ? `\`${groupConfig.otpGroupChatId}\``
+    : "_Auto from link_";
+  const checkStatus = groupConfig.strictCheck
+    ? "🟢 ON (গ্রুপ মেম্বারশিপ চেক হবে)"
+    : "🟨 OFF (শুধু Verify চাপলেই হবে)";
+
+  const text =
+    `🟩 *GROUP CONTROL PANEL*\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `📢 *Main Group Link:* \`${groupConfig.mainGroupLink}\`\n` +
+    `🆔 *Main Group ID/User:* ${mainIdText}\n\n` +
+    `💬 *OTP Group Link:* \`${groupConfig.otpGroupLink}\`\n` +
+    `🆔 *OTP Group ID/User:* ${otpIdText}\n\n` +
+    `🔐 *Join Check:* ${checkStatus}`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback("🟦 Set Main Link", "adm_grp_set:main_link"),
+      Markup.button.callback("🟦 Set Main ID", "adm_grp_set:main_id"),
+    ],
+    [
+      Markup.button.callback("🟩 Set OTP Link", "adm_grp_set:otp_link"),
+      Markup.button.callback("🟩 Set OTP ID", "adm_grp_set:otp_id"),
+    ],
+    [
+      Markup.button.callback(
+        groupConfig.strictCheck
+          ? "🟨 Turn Join Check OFF"
+          : "🟢 Turn Join Check ON",
+        "adm_grp_toggle_check"
+      ),
+    ],
+    [Markup.button.callback("⬜ ⬅️ Back to Admin", "adm_home")],
+  ]);
+
+  if (isEdit) {
+    return ctx.editMessageText(text, { parse_mode: "Markdown", ...keyboard });
+  }
+  return ctx.reply(text, { parse_mode: "Markdown", ...keyboard });
+}
+
+bot.action("adm_menu:groups", async (ctx) => {
+  trackUser(ctx);
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
+  await ctx.answerCbQuery();
+  adminState.delete(ctx.from.id);
+  await showGroupControlMenu(ctx, true);
+});
+
+bot.action(/^adm_grp_set:(main_link|main_id|otp_link|otp_id)$/, async (ctx) => {
+  trackUser(ctx);
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
+  await ctx.answerCbQuery();
+  const field = ctx.match[1];
+  adminState.set(ctx.from.id, { step: "set_group_field", field });
+
+  const prompts = {
+    main_link:
+      "🟦 *SET MAIN GROUP LINK*\nমেইন গ্রুপের লিংক পাঠান (যেমন: `https://t.me/your_group` বা `https://t.me/+invitehash`):",
+    main_id:
+      "🟦 *SET MAIN GROUP ID / USERNAME*\nমেইন গ্রুপের Chat ID (যেমন `-1001234567890`) বা `@username` পাঠান:",
+    otp_link:
+      "🟩 *SET OTP GROUP LINK*\nওটিপি গ্রুপের লিংক পাঠান (যেমন: `https://t.me/your_otp_group` বা `https://t.me/+invitehash`):",
+    otp_id:
+      "🟩 *SET OTP GROUP ID / USERNAME*\nওটিপি গ্রুপের Chat ID (যেমন `-1009876543210`) বা `@username` পাঠান:",
+  };
+
+  await ctx.editMessageText(prompts[field], { parse_mode: "Markdown" });
+});
+
+bot.action("adm_grp_toggle_check", async (ctx) => {
+  trackUser(ctx);
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
+  groupConfig.strictCheck = !groupConfig.strictCheck;
+  verifiedUsers.clear();
+  await ctx.answerCbQuery(
+    groupConfig.strictCheck ? "Join Check ON" : "Join Check OFF"
+  );
+  await showGroupControlMenu(ctx, true);
+});
+
+// --- START & GROUP VERIFICATION ---
+bot.start(async (ctx) => {
+  trackUser(ctx);
+  const uid = ctx.from.id;
+
+  if (!isAdmin(uid)) {
+    const joined = await checkBothGroupsJoined(uid);
+    if (!joined) {
+      return promptJoinGroups(ctx, false);
+    }
+    verifiedUsers.add(uid);
+  }
+
+  return ctx.reply("🟢 স্বাগতম! নিচের *GET NUMBER* বাটনে চাপ দিয়ে শুরু করুন:", {
+    parse_mode: "Markdown",
+    ...mainKeyboard(uid),
+  });
+});
+
+bot.action("verify_groups", async (ctx) => {
+  trackUser(ctx);
+  const uid = ctx.from.id;
+  const joined = await checkBothGroupsJoined(uid);
+
+  if (!joined) {
+    await ctx.answerCbQuery("আগে দুটি গ্রুপেই জয়েন করুন!", { show_alert: true });
+    return promptJoinGroups(ctx, true);
+  }
+
+  verifiedUsers.add(uid);
+  await ctx.answerCbQuery("ভেরিফিকেশন সফল হয়েছে!");
+
+  try {
+    await ctx.editMessageText(
+      "🟢 ✅ *ভেরিফিকেশন সফল হয়েছে!*\nএখন আপনি বটের সব ফিচার ব্যবহার করতে পারবেন।",
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {}
+
+  return ctx.reply("🟢 স্বাগতম! নিচের *GET NUMBER* বাটনে চাপ দিয়ে শুরু করুন:", {
+    parse_mode: "Markdown",
+    ...mainKeyboard(uid),
+  });
+});
 
 bot.command("admin", (ctx) => openAdminPanel(ctx, false));
 bot.hears(["💠 ADMIN PANEL", "⚙️ ADMIN PANEL"], (ctx) =>
@@ -697,11 +1010,8 @@ bot.action(/^adm_cnt_add:(.+)$/, async (ctx) => {
 
   await ctx.editMessageText(
     `🟩 *ADD COUNTRY (${titleCase(srvKey)})*\n\n` +
-      `দেশের নাম ও তথ্য লিখুন:\n` +
-      `\`দেশের নাম, পতাকা, কান্ট্রি কোড\`\n\n` +
-      `উদাহরণ:\n` +
-      `\`Bangladesh, 🇧🇩, +880\`\n` +
-      `বা \`Cuba, 🇨🇺, +53\``,
+      `শুধু **দেশের নাম** লিখুন (পতাকা ও কান্ট্রি কোড অটো সেট হয়ে যাবে):\n` +
+      `উদাহরণ: \`Bangladesh\`, \`Cuba\`, \`Tanzania\`, \`United States\`, \`India\``,
     { parse_mode: "Markdown" }
   );
 });
@@ -731,7 +1041,7 @@ bot.action(/^adm_cnt_del:(.+):(.+)$/, async (ctx) => {
   );
 });
 
-// --- UPLOAD NUMBERS (Service -> Country -> Numbers) ---
+// --- UPLOAD NUMBERS ---
 bot.action("adm_menu:numbers", async (ctx) => {
   trackUser(ctx);
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
@@ -876,7 +1186,11 @@ bot.action(/^adm_mode:(.+):(.+):(replace|append)$/, async (ctx) => {
 bot.on("document", async (ctx) => {
   trackUser(ctx);
   const uid = ctx.from.id;
-  if (!isAdmin(uid)) return;
+  if (!isAdmin(uid)) {
+    const ok = await ensureVerifiedAccess(ctx);
+    if (!ok) return;
+    return;
+  }
   const st = adminState.get(uid);
   if (!st || st.step !== "upload_numbers") return;
 
@@ -884,14 +1198,14 @@ bot.on("document", async (ctx) => {
     const fileLink = await ctx.telegram.getFileLink(ctx.message.document.file_id);
     const response = await fetch(fileLink.href);
     const content = await response.text();
-    const parsed = parseNumbersFromText(content);
+    const target = numbersDatabase[st.service]?.[st.countryKey];
+    if (!target) return ctx.reply("🟨 ⚠️ টার্গেট দেশ পাওয়া যায়নি।");
+
+    const parsed = parseNumbersFromText(content, target.cc);
 
     if (parsed.length === 0) {
       return ctx.reply("🟨 ⚠️ ফাইলে কোনো বৈধ নম্বর পাওয়া যায়নি।");
     }
-
-    const target = numbersDatabase[st.service]?.[st.countryKey];
-    if (!target) return ctx.reply("🟨 ⚠️ টার্গেট দেশ পাওয়া যায়নি।");
 
     target.numbers =
       st.mode === "replace" ? parsed : [...target.numbers, ...parsed];
@@ -904,7 +1218,7 @@ bot.on("document", async (ctx) => {
     );
 
     await ctx.reply(
-      `🟢 ✅ সফলভাবে *${parsed.length}* টি নম্বর *${titleCase(st.service)} (${target.flag} ${target.name})* এ সেট করা হয়েছে!\n` +
+      `🟢 ✅ সফলভাবে *${parsed.length}* টি নম্বর (${target.cc} কোডসহ) *${titleCase(st.service)} (${target.flag} ${target.name})* এ সেট করা হয়েছে!\n` +
         `📊 মোট নম্বর: *${target.numbers.length}* টি\n` +
         `🔔 নোটিফিকেশন পাঠানো হয়েছে: *${notifyStats.sent}* জন ইউজারকে।`,
       { parse_mode: "Markdown" }
@@ -915,17 +1229,11 @@ bot.on("document", async (ctx) => {
   }
 });
 
-// --- USER FLOW (শুধু আপনি যা সেট করবেন, ইউজার সেটাই ও সেই ক্রমে দেখবে) ---
-bot.start((ctx) => {
-  trackUser(ctx);
-  ctx.reply("🟢 স্বাগতম! নিচের *GET NUMBER* বাটনে চাপ দিয়ে শুরু করুন:", {
-    parse_mode: "Markdown",
-    ...mainKeyboard(ctx.from.id),
-  });
-});
+// --- USER FLOW (Verified Users Only) ---
+async function showServicesMenu(ctx, isEdit = false) {
+  const ok = await ensureVerifiedAccess(ctx);
+  if (!ok) return;
 
-function showServicesMenu(ctx, isEdit = false) {
-  trackUser(ctx);
   const serviceKeys = getConfiguredServices();
   if (serviceKeys.length === 0) {
     const emptyText = "🟥 ❌ বর্তমানে কোনো সার্ভিস সেট করা হয়নি।";
@@ -965,7 +1273,9 @@ function showServicesMenu(ctx, isEdit = false) {
 bot.hears("📞 GET NUMBER", (ctx) => showServicesMenu(ctx, false));
 
 bot.action(/^service:(.+)$/, async (ctx) => {
-  trackUser(ctx);
+  const ok = await ensureVerifiedAccess(ctx);
+  if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
+
   await ctx.answerCbQuery();
   const service = ctx.match[1];
   const countries = numbersDatabase[service];
@@ -1004,13 +1314,17 @@ bot.action(/^service:(.+)$/, async (ctx) => {
 });
 
 bot.action("back_services", async (ctx) => {
-  trackUser(ctx);
+  const ok = await ensureVerifiedAccess(ctx);
+  if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
+
   await ctx.answerCbQuery();
   await showServicesMenu(ctx, true);
 });
 
 bot.action(/^country:(.+):(.+)$/, async (ctx) => {
-  trackUser(ctx);
+  const ok = await ensureVerifiedAccess(ctx);
+  if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
+
   await ctx.answerCbQuery();
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
@@ -1031,7 +1345,10 @@ bot.action(/^country:(.+):(.+)$/, async (ctx) => {
   const view = buildNumbersView(uid, service, countryKey, customList);
   if (view) {
     await ctx.editMessageText(view.text, view.extra);
-    const activePhone = apiPhone || countryData.numbers[0];
+    const activePhone = normalizeNumberWithCc(
+      apiPhone || countryData.numbers[0],
+      countryData.cc
+    );
     if (activePhone) {
       startOtpWatcher(ctx, service, countryData, activePhone);
     }
@@ -1039,7 +1356,9 @@ bot.action(/^country:(.+):(.+)$/, async (ctx) => {
 });
 
 bot.action(/^change_num:(.+):(.+)$/, async (ctx) => {
-  trackUser(ctx);
+  const ok = await ensureVerifiedAccess(ctx);
+  if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
+
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
   const countryData = numbersDatabase[service]?.[countryKey];
@@ -1068,11 +1387,14 @@ bot.action(/^change_num:(.+):(.+)$/, async (ctx) => {
     } catch (e) {
       await ctx.reply(view.text, view.extra);
     }
-    const activePhone =
+    const rawActive =
       apiPhone ||
       (countryData.numbers.length > 0
         ? countryData.numbers[current.offset % countryData.numbers.length]
         : null);
+    const activePhone = rawActive
+      ? normalizeNumberWithCc(rawActive, countryData.cc)
+      : null;
     if (activePhone) {
       startOtpWatcher(ctx, service, countryData, activePhone);
     }
@@ -1080,7 +1402,9 @@ bot.action(/^change_num:(.+):(.+)$/, async (ctx) => {
 });
 
 bot.action(/^toggle_cc:(.+):(.+)$/, async (ctx) => {
-  trackUser(ctx);
+  const ok = await ensureVerifiedAccess(ctx);
+  if (!ok) return ctx.answerCbQuery("আগে দুটি গ্রুপে জয়েন করুন");
+
   await ctx.answerCbQuery();
   const [, service, countryKey] = ctx.match;
   const uid = ctx.from.id;
@@ -1099,37 +1423,76 @@ bot.action(/^toggle_cc:(.+):(.+)$/, async (ctx) => {
   }
 });
 
-bot.hears("👛 WALLET", (ctx) => {
-  trackUser(ctx);
+bot.hears("👛 WALLET", async (ctx) => {
+  if (!(await ensureVerifiedAccess(ctx))) return;
   return ctx.reply("🟦 👛 আপনার অ্যাকাউন্ট ফ্রি মোডে চালু আছে।");
 });
-bot.hears("📡 TRAFFIC", (ctx) => {
-  trackUser(ctx);
+bot.hears("📡 TRAFFIC", async (ctx) => {
+  if (!(await ensureVerifiedAccess(ctx))) return;
   return ctx.reply("🟢 📡 সার্ভার স্ট্যাটাস: অনলাইন এবং সচল।");
 });
-bot.hears("✅ WA CHECKER", (ctx) => {
-  trackUser(ctx);
+bot.hears("✅ WA CHECKER", async (ctx) => {
+  if (!(await ensureVerifiedAccess(ctx))) return;
   return ctx.reply("🟢 ✅ নাম্বার চেকার সক্রিয় রয়েছে।");
 });
-bot.hears("🌐 LANGUAGE", (ctx) => {
-  trackUser(ctx);
+bot.hears("🌐 LANGUAGE", async (ctx) => {
+  if (!(await ensureVerifiedAccess(ctx))) return;
   return ctx.reply("🟦 🌐 ভাষা: বাংলা / English");
 });
-bot.hears("🆘 SUPPORT", (ctx) => {
-  trackUser(ctx);
+bot.hears("🆘 SUPPORT", async (ctx) => {
+  if (!(await ensureVerifiedAccess(ctx))) return;
   return ctx.reply("🟨 🆘 যেকোনো প্রয়োজনে অ্যাডমিনকে মেসেজ দিন।");
 });
-bot.hears("📄 NUMBER FILE", (ctx) => {
-  trackUser(ctx);
+bot.hears("📄 NUMBER FILE", async (ctx) => {
+  if (!(await ensureVerifiedAccess(ctx))) return;
   return ctx.reply("🟦 📄 সব নাম্বার মেনু থেকেই কপি করতে পারবেন।");
 });
 
 bot.on("text", async (ctx) => {
   trackUser(ctx);
   const uid = ctx.from.id;
-  if (!isAdmin(uid)) return;
+
+  if (!isAdmin(uid)) {
+    const ok = await ensureVerifiedAccess(ctx);
+    if (!ok) return;
+    return;
+  }
+
   const st = adminState.get(uid);
   if (!st) return;
+
+  if (st.step === "set_group_field") {
+    const val = ctx.message.text.trim();
+    if (!val) {
+      return ctx.reply("🟨 ⚠️ সঠিক মান লিখুন।");
+    }
+
+    if (st.field === "main_link") {
+      if (!/^https:\/\/t\.me\/.+/i.test(val)) {
+        return ctx.reply(
+          "🟨 ⚠️ সঠিক Telegram লিংক দিন (যেমন: `https://t.me/...`)।",
+          { parse_mode: "Markdown" }
+        );
+      }
+      groupConfig.mainGroupLink = val;
+    } else if (st.field === "main_id") {
+      groupConfig.mainGroupChatId = val;
+    } else if (st.field === "otp_link") {
+      if (!/^https:\/\/t\.me\/.+/i.test(val)) {
+        return ctx.reply(
+          "🟨 ⚠️ সঠিক Telegram লিংক দিন (যেমন: `https://t.me/...`)।",
+          { parse_mode: "Markdown" }
+        );
+      }
+      groupConfig.otpGroupLink = val;
+    } else if (st.field === "otp_id") {
+      groupConfig.otpGroupChatId = val;
+    }
+
+    verifiedUsers.clear();
+    adminState.delete(uid);
+    return showGroupControlMenu(ctx, false);
+  }
 
   if (st.step === "set_api_url") {
     const inputUrl = ctx.message.text.trim();
@@ -1182,39 +1545,35 @@ bot.on("text", async (ctx) => {
   }
 
   if (st.step === "add_country") {
-    const parts = ctx.message.text.split(",").map((p) => p.trim());
-    const nameRaw = parts[0] || "";
-    const flag = parts[1] || "🏳️";
-    const rawCc = parts[2] || "+1";
-    const cc = rawCc.startsWith("+") ? rawCc : `+${rawCc}`;
-    const cKey = makeKey(nameRaw);
-
-    if (!cKey) {
+    const resolved = resolveCountryDetails(ctx.message.text);
+    if (!resolved) {
       return ctx.reply(
-        "🟨 ⚠️ সঠিক ফরম্যাটে লিখুন:\n`Bangladesh, 🇧🇩, +880`",
+        "🟨 ⚠️ সঠিক দেশের নাম লিখুন (যেমন: `Bangladesh` বা `Cuba` বা `Tanzania`)।",
         { parse_mode: "Markdown" }
       );
     }
 
     registerServiceInOrder(st.service);
-    numbersDatabase[st.service][cKey] = {
-      name: titleCase(nameRaw),
-      flag,
-      cc,
-      numbers: numbersDatabase[st.service][cKey]?.numbers || [],
+    const existingNums =
+      numbersDatabase[st.service][resolved.cKey]?.numbers || [];
+    numbersDatabase[st.service][resolved.cKey] = {
+      name: resolved.name,
+      flag: resolved.flag,
+      cc: resolved.cc,
+      numbers: existingNums,
     };
 
     const srvName = titleCase(st.service);
     adminState.delete(uid);
     return ctx.reply(
-      `🟢 ✅ *${srvName}* এ *${flag} ${titleCase(nameRaw)} (${cc})* যুক্ত হয়েছে! এখন নম্বর অ্যাড করুন:`,
+      `🟢 ✅ *${srvName}* এ *${resolved.flag} ${resolved.name} (${resolved.cc})* অটো কান্ট্রি কোডসহ যুক্ত হয়েছে! এখন নম্বর অ্যাড করুন:`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [
             Markup.button.callback(
-              `🟩 📄 ${titleCase(nameRaw)} এ নম্বর অ্যাড করুন`,
-              `adm_cnt:${st.service}:${cKey}`
+              `🟩 📄 ${resolved.name} এ নম্বর অ্যাড করুন`,
+              `adm_cnt:${st.service}:${resolved.cKey}`
             ),
           ],
           [Markup.button.callback("💠 🏠 Admin Panel", "adm_home")],
@@ -1224,13 +1583,13 @@ bot.on("text", async (ctx) => {
   }
 
   if (st.step === "upload_numbers") {
-    const parsed = parseNumbersFromText(ctx.message.text);
+    const target = numbersDatabase[st.service]?.[st.countryKey];
+    if (!target) return ctx.reply("🟨 ⚠️ টার্গেট দেশ পাওয়া যায়নি।");
+
+    const parsed = parseNumbersFromText(ctx.message.text, target.cc);
     if (parsed.length === 0) {
       return ctx.reply("🟨 ⚠️ বৈধ নম্বর পাওয়া যায়নি। প্রতি লাইনে ১টি নম্বর দিন।");
     }
-
-    const target = numbersDatabase[st.service]?.[st.countryKey];
-    if (!target) return ctx.reply("🟨 ⚠️ টার্গেট দেশ পাওয়া যায়নি।");
 
     target.numbers =
       st.mode === "replace" ? parsed : [...target.numbers, ...parsed];
@@ -1243,7 +1602,7 @@ bot.on("text", async (ctx) => {
     );
 
     return ctx.reply(
-      `🟢 ✅ *${parsed.length}* টি নম্বর *${titleCase(st.service)} (${target.flag} ${target.name})* এ যুক্ত হয়েছে!\n` +
+      `🟢 ✅ *${parsed.length}* টি নম্বর (${target.cc} কোডসহ) *${titleCase(st.service)} (${target.flag} ${target.name})* এ যুক্ত হয়েছে!\n` +
         `📊 মোট নম্বর: *${target.numbers.length}* টি\n` +
         `🔔 নোটিফিকেশন পাঠানো হয়েছে: *${notifyStats.sent}* জন ইউজারকে।`,
       { parse_mode: "Markdown" }
