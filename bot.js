@@ -15,6 +15,24 @@ const FIREBASE_DB_URL =
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// ইউজার ফ্লোর ক্রম: WhatsApp -> Facebook -> Telegram -> Instagram -> Imo
+const USER_SERVICE_ORDER = [
+  "whatsapp",
+  "facebook",
+  "telegram",
+  "instagram",
+  "imo",
+];
+
+// অ্যাডমিন ফ্লোর ক্রম: WhatsApp -> Telegram -> Facebook -> Instagram -> Imo
+const ADMIN_SERVICE_ORDER = [
+  "whatsapp",
+  "telegram",
+  "facebook",
+  "instagram",
+  "imo",
+];
+
 const numbersDatabase = {
   whatsapp: {
     cuba: {
@@ -28,6 +46,14 @@ const numbersDatabase = {
       flag: "🇹🇿",
       cc: "+255",
       numbers: ["255650999626", "255650999627", "255650999628"],
+    },
+  },
+  facebook: {
+    cuba: {
+      name: "Cuba",
+      flag: "🇨🇺",
+      cc: "+53",
+      numbers: ["5363157301", "5363157302", "5363157303"],
     },
   },
   telegram: {
@@ -46,12 +72,12 @@ const numbersDatabase = {
       numbers: ["5363157201", "5363157202", "5363157203"],
     },
   },
-  facebook: {
+  imo: {
     cuba: {
       name: "Cuba",
       flag: "🇨🇺",
       cc: "+53",
-      numbers: ["5363157301", "5363157302", "5363157303"],
+      numbers: ["5363157401", "5363157402", "5363157403"],
     },
   },
 };
@@ -109,14 +135,34 @@ function titleCase(str) {
 function getServiceEmoji(serviceKey) {
   const map = {
     whatsapp: "🟢",
+    facebook: "🔷",
     telegram: "🔵",
     instagram: "🟣",
-    facebook: "🔷",
+    imo: "🟠",
     tiktok: "🔴",
     viber: "🟪",
     signal: "🟦",
   };
   return map[serviceKey] || "💠";
+}
+
+function getOrderedServices(preferredOrder) {
+  const allKeys = Object.keys(numbersDatabase);
+  const ordered = [];
+
+  for (const key of preferredOrder) {
+    if (allKeys.includes(key) && !ordered.includes(key)) {
+      ordered.push(key);
+    }
+  }
+
+  for (const key of allKeys) {
+    if (!ordered.includes(key)) {
+      ordered.push(key);
+    }
+  }
+
+  return ordered;
 }
 
 function parseNumbersFromText(rawText) {
@@ -547,7 +593,7 @@ bot.action("adm_menu:services", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
 
-  const keys = Object.keys(numbersDatabase);
+  const keys = getOrderedServices(ADMIN_SERVICE_ORDER);
   const rows = [
     [Markup.button.callback("🟩 ➕ Add New Service", "adm_srv_add")],
   ];
@@ -582,7 +628,7 @@ bot.action("adm_srv_add", async (ctx) => {
   adminState.set(ctx.from.id, { step: "add_service" });
 
   await ctx.editMessageText(
-    "🟩 *ADD NEW SERVICE*\nসার্ভিসের নাম লিখে পাঠান (যেমন: `TikTok` বা `Viber` বা `Signal`):",
+    "🟩 *ADD NEW SERVICE*\nসার্ভিসের নাম লিখে পাঠান (যেমন: `WhatsApp`, `Telegram`, `Facebook`, `Instagram`, `Imo` বা অন্য কোনোটি):",
     { parse_mode: "Markdown" }
   );
 });
@@ -616,7 +662,7 @@ bot.action("adm_menu:countries", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
 
-  const keys = Object.keys(numbersDatabase);
+  const keys = getOrderedServices(ADMIN_SERVICE_ORDER);
   if (keys.length === 0) {
     return ctx.editMessageText(
       "🟨 ⚠️ কোনো সার্ভিস নেই। আগে সার্ভিস যুক্ত করুন।",
@@ -727,13 +773,13 @@ bot.action(/^adm_cnt_del:(.+):(.+)$/, async (ctx) => {
   );
 });
 
-// --- UPLOAD NUMBERS ---
+// --- UPLOAD NUMBERS (Service -> Country -> Numbers) ---
 bot.action("adm_menu:numbers", async (ctx) => {
   trackUser(ctx);
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Unauthorized");
   await ctx.answerCbQuery();
 
-  const keys = Object.keys(numbersDatabase);
+  const keys = getOrderedServices(ADMIN_SERVICE_ORDER);
   if (keys.length === 0) {
     return ctx.editMessageText(
       "🟨 ⚠️ আগে অন্তত ১টি সার্ভিস যুক্ত করুন।",
@@ -752,9 +798,9 @@ bot.action("adm_menu:numbers", async (ctx) => {
   buttons.push([Markup.button.callback("⬜ ⬅️ Back to Admin", "adm_home")]);
 
   await ctx.editMessageText(
-    "🟩 *UPLOAD NUMBERS*\n" +
+    "🟩 *UPLOAD NUMBERS — ধাপ ১: সার্ভিস সিলেক্ট করুন*\n" +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "কোন সার্ভিসের নম্বর ফাইল বা লিস্ট সেট করতে চান?",
+      "প্রথমে সার্ভিস সিলেক্ট করুন, তারপর দেশ এবং এরপর নম্বর সেট করবেন:",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(buttons),
@@ -787,9 +833,9 @@ bot.action(/^adm_srv:(.+)$/, async (ctx) => {
   buttons.push([Markup.button.callback("⬜ ⬅️ Back", "adm_menu:numbers")]);
 
   await ctx.editMessageText(
-    `🟦 *${titleCase(service)} COUNTRIES*\n` +
+    `🟦 *${titleCase(service)} — ধাপ ২: দেশ সিলেক্ট করুন*\n` +
       "━━━━━━━━━━━━━━━━━━\n" +
-      "কোন দেশে নম্বর সেট করবেন?",
+      "যে দেশে নম্বর সেট করবেন সেই দেশ সিলেক্ট করুন:",
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard(buttons),
@@ -804,7 +850,7 @@ bot.action(/^adm_cnt:(.+):(.+)$/, async (ctx) => {
   const [, service, countryKey] = ctx.match;
 
   await ctx.editMessageText(
-    `🟩 *${titleCase(service)} - ${countryKey.toUpperCase()}*\n` +
+    `🟩 *${titleCase(service)} - ${countryKey.toUpperCase()} — ধাপ ৩: নম্বর সেট করুন*\n` +
       `• *Replace List*: আগের নম্বর মুছে নতুন ফাইল/লিস্ট বসাবে\n` +
       `• *Add Numbers*: আগের নম্বরের সাথে নতুন নম্বর যোগ করবে`,
     {
@@ -840,7 +886,7 @@ bot.action(/^adm_mode:(.+):(.+):(replace|append)$/, async (ctx) => {
   });
 
   await ctx.editMessageText(
-    `🟩 এখন *${titleCase(service)} (${countryKey.toUpperCase()})* এর জন্য:\n` +
+    `🟩 এখন *${titleCase(service)} (${countryKey.toUpperCase()})* এর নম্বর পাঠান:\n` +
       `1️⃣ একটি *.txt* ফাইল পাঠান (প্রতি লাইনে ১টি নম্বর), অথবা\n` +
       `2️⃣ সরাসরি মেসেজে নম্বরগুলো পেস্ট করে পাঠান (প্রতি লাইনে ১টি নম্বর)।`,
     { parse_mode: "Markdown" }
@@ -889,7 +935,7 @@ bot.on("document", async (ctx) => {
   }
 });
 
-// --- USER FLOW ---
+// --- USER FLOW (Service -> Country -> Numbers) ---
 bot.start((ctx) => {
   trackUser(ctx);
   ctx.reply("🟢 স্বাগতম! নিচের *GET NUMBER* বাটনে চাপ দিয়ে শুরু করুন:", {
@@ -900,7 +946,7 @@ bot.start((ctx) => {
 
 function showServicesMenu(ctx, isEdit = false) {
   trackUser(ctx);
-  const serviceKeys = Object.keys(numbersDatabase);
+  const serviceKeys = getOrderedServices(USER_SERVICE_ORDER);
   if (serviceKeys.length === 0) {
     const emptyText = "🟥 ❌ বর্তমানে কোনো সার্ভিস চালু নেই।";
     return isEdit ? ctx.editMessageText(emptyText) : ctx.reply(emptyText);
@@ -1104,7 +1150,7 @@ bot.on("text", async (ctx) => {
   if (st.step === "add_service") {
     const srvKey = makeKey(ctx.message.text);
     if (!srvKey) {
-      return ctx.reply("🟨 ⚠️ সঠিক সার্ভিসের নাম লিখুন (যেমন: `TikTok`)।", {
+      return ctx.reply("🟨 ⚠️ সঠিক সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` বা `Imo`)।", {
         parse_mode: "Markdown",
       });
     }
