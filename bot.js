@@ -99,15 +99,19 @@ function attachCountryCode(rawNumber, dialCode = '') {
 }
 
 const state = {
-  // স্বাধীন Socket ও API অন/অফ ফ্ল্যাগ (ডিফল্টে Socket OFF যাতে লগে অযথা এরর না আসে)
-  socketEnabled: process.env.SOCKET_ENABLED === 'true',
-  apiEnabled: process.env.API_ENABLED !== 'false',
+  // স্বাধীন ON / OFF ফ্ল্যাগসমূহ (ডিফল্টে সব OFF যাতে কোনো অটো কানেকশন বা এরর না আসে)
+  apiUrlEnabled: false,
+  apiKeyEnabled: false,
+  socketUrlEnabled: false,
+  cookieUrlEnabled: false,
 
-  socketUrl: process.env.SOCKET_URL || 'https://www.ivasms.com',
-  socketPath: process.env.SOCKET_PATH || '/live/socket.io/',
-  socketCookie: process.env.SOCKET_COOKIE || '',
+  // সেটআপ ভ্যালুসমূহ
   apiUrl: process.env.API_URL || '',
   apiKey: process.env.API_KEY || '',
+  socketUrl: process.env.SOCKET_URL || '',
+  socketPath: process.env.SOCKET_PATH || '/socket.io/',
+  cookieUrl: process.env.COOKIE_URL || '',
+  cookieValue: process.env.SOCKET_COOKIE || '',
 
   // গ্রুপ ও Join Check সেটিংস
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/your_main_group_link',
@@ -182,39 +186,50 @@ function parseSocketInput(rawInput) {
     const path =
       parsed.pathname && parsed.pathname !== '/'
         ? parsed.pathname
-        : '/live/socket.io/';
+        : '/socket.io/';
     return { origin, path };
   } catch (_) {
-    return { origin: trimmed, path: state.socketPath || '/live/socket.io/' };
+    return { origin: trimmed, path: state.socketPath || '/socket.io/' };
   }
 }
 
-function getActiveModeLabel() {
-  if (state.socketEnabled && state.apiEnabled) return 'SOCKET + API';
-  if (state.socketEnabled) return 'SOCKET';
-  if (state.apiEnabled) return 'API';
-  return 'OFF';
-}
-
-async function setSocketEnabled(enabled) {
-  state.socketEnabled = Boolean(enabled);
-  await dbPut('config/socketEnabled', state.socketEnabled);
-  initSocket();
-}
-
-async function setApiEnabled(enabled) {
-  state.apiEnabled = Boolean(enabled);
-  await dbPut('config/apiEnabled', state.apiEnabled);
+async function syncCookieFromUrlIfEnabled() {
+  if (!state.cookieUrlEnabled || !state.cookieUrl) return;
+  try {
+    const res = await axios.get(state.cookieUrl, { timeout: 10000 });
+    const raw = typeof res.data === 'string' ? res.data.trim() : JSON.stringify(res.data || '');
+    if (raw) {
+      state.cookieValue = raw;
+      await dbPut('config/cookieValue', raw);
+    }
+  } catch (e) {
+    console.error('Cookie URL fetch error:', e.message);
+  }
 }
 
 async function turnAllOff() {
-  state.socketEnabled = false;
-  state.apiEnabled = false;
+  state.apiUrlEnabled = false;
+  state.apiKeyEnabled = false;
+  state.socketUrlEnabled = false;
+  state.cookieUrlEnabled = false;
+
   await Promise.all([
-    dbPut('config/socketEnabled', false),
-    dbPut('config/apiEnabled', false)
+    dbPut('config/apiUrlEnabled', false),
+    dbPut('config/apiKeyEnabled', false),
+    dbPut('config/socketUrlEnabled', false),
+    dbPut('config/cookieUrlEnabled', false)
   ]);
+
   initSocket();
+}
+
+function getActiveSummaryLabel() {
+  const active = [];
+  if (state.apiUrlEnabled) active.push('API URL');
+  if (state.apiKeyEnabled) active.push('API KEY');
+  if (state.socketUrlEnabled) active.push('SOCKET URL');
+  if (state.cookieUrlEnabled) active.push('COOKIE URL');
+  return active.length ? active.join(' + ') : 'ALL OFF';
 }
 
 function normalizePhoneKey(phone) {
@@ -534,16 +549,18 @@ function maskSecret(val) {
   return `${val.slice(0, 3)}***${val.slice(-3)}`;
 }
 
-// মেইন অ্যাডমিন প্যানেল: সিঙ্গেল ও All OFF বাটন + দেশভিত্তিক ডিলিট বাটন
+// মেইন অ্যাডমিন প্যানেল: ৪টির আলাদা ON/OFF + All OFF + দেশভিত্তিক ডিলিট
 function getMainAdminPayload() {
   const text =
     `💠 *ADMIN PANEL*\n\n` +
     `• *Saved Numbers:* \`${state.numberEntries.length}\`\n` +
     `• *Total Codes:* \`${state.otpStats.total || 0}\`\n` +
     `• *Total Users:* \`${state.users.length}\`\n` +
-    `• *Active Mode:* *${getActiveModeLabel()}*\n` +
-    `• *Socket:* *${state.socketEnabled ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
-    `• *API:* *${state.apiEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
+    `• *Active Setup:* *${getActiveSummaryLabel()}*\n` +
+    `• *API URL:* ${state.apiUrlEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
+    `• *API KEY:* ${state.apiKeyEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
+    `• *SOCKET URL:* ${state.socketUrlEnabled ? '🟢 ON' : '🔴 OFF'} (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
+    `• *COOKIE URL:* ${state.cookieUrlEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
     `• *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}`;
 
   const keyboard = Markup.inlineKeyboard([
@@ -552,27 +569,130 @@ function getMainAdminPayload() {
       Markup.button.callback('🗑️ Delete by Country', 'sub_delete_country')
     ],
     [
-      Markup.button.callback('🔌 API Setup', 'sub_api_menu'),
-      Markup.button.callback('⚡ Socket Setup', 'sub_socket_menu')
+      Markup.button.callback('🌐 API URL Setup', 'sub_api_url_menu'),
+      Markup.button.callback('🔑 API KEY Setup', 'sub_api_key_menu')
     ],
-    [Markup.button.callback('👥 Group Setup', 'sub_group_menu')],
+    [
+      Markup.button.callback('⚡ SOCKET URL Setup', 'sub_socket_url_menu'),
+      Markup.button.callback('🍪 COOKIE URL Setup', 'sub_cookie_url_menu')
+    ],
     [
       Markup.button.callback(
-        state.socketEnabled ? '🔴 Socket OFF' : '🟢 Socket ON',
-        state.socketEnabled ? 'socket_off_btn' : 'socket_on_btn'
+        state.apiUrlEnabled ? '🔴 API URL OFF' : '🟢 API URL ON',
+        'tgl_api_url'
       ),
       Markup.button.callback(
-        state.apiEnabled ? '🔴 API OFF' : '🟢 API ON',
-        state.apiEnabled ? 'api_off_btn' : 'api_on_btn'
+        state.apiKeyEnabled ? '🔴 API KEY OFF' : '🟢 API KEY ON',
+        'tgl_api_key'
       )
     ],
-    [Markup.button.callback('⛔ All OFF', 'all_off_btn')]
+    [
+      Markup.button.callback(
+        state.socketUrlEnabled ? '🔴 SOCKET OFF' : '🟢 SOCKET ON',
+        'tgl_socket_url'
+      ),
+      Markup.button.callback(
+        state.cookieUrlEnabled ? '🔴 COOKIE OFF' : '🟢 COOKIE ON',
+        'tgl_cookie_url'
+      )
+    ],
+    [
+      Markup.button.callback('👥 Group Setup', 'sub_group_menu'),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+    ]
   ]);
 
   return { text, keyboard };
 }
 
-// দেশ অনুযায়ী নম্বর ডিলিট করার সাব-মেনু (শুধু নির্বাচিত দেশের নম্বর মুছবে)
+function getApiUrlSetupPayload() {
+  const text =
+    `🌐 *API URL SETUP*\n\n` +
+    `• *Status:* *${state.apiUrlEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
+    `• *API URL:* \`${state.apiUrl || 'Not set'}\``;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('✏️ Set API URL', 'cfg_api_url')],
+    [
+      Markup.button.callback(
+        state.apiUrlEnabled ? '🔴 API URL OFF' : '🟢 API URL ON',
+        'tgl_api_url'
+      ),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+    ],
+    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+  ]);
+
+  return { text, keyboard };
+}
+
+function getApiKeySetupPayload() {
+  const text =
+    `🔑 *API KEY SETUP*\n\n` +
+    `• *Status:* *${state.apiKeyEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
+    `• *API KEY:* \`${maskSecret(state.apiKey)}\``;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('✏️ Set API KEY', 'cfg_api_key')],
+    [
+      Markup.button.callback(
+        state.apiKeyEnabled ? '🔴 API KEY OFF' : '🟢 API KEY ON',
+        'tgl_api_key'
+      ),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+    ],
+    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+  ]);
+
+  return { text, keyboard };
+}
+
+function getSocketUrlSetupPayload() {
+  const fullSocket = state.socketUrl
+    ? `${state.socketUrl}${state.socketPath || '/socket.io/'}`
+    : 'Not set';
+  const text =
+    `⚡ *SOCKET URL SETUP*\n\n` +
+    `• *Status:* *${state.socketUrlEnabled ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
+    `• *SOCKET URL:* \`${fullSocket}\``;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('✏️ Set SOCKET URL', 'cfg_socket_url')],
+    [
+      Markup.button.callback(
+        state.socketUrlEnabled ? '🔴 SOCKET OFF' : '🟢 SOCKET ON',
+        'tgl_socket_url'
+      ),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+    ],
+    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+  ]);
+
+  return { text, keyboard };
+}
+
+function getCookieUrlSetupPayload() {
+  const text =
+    `🍪 *COOKIE URL SETUP*\n\n` +
+    `• *Status:* *${state.cookieUrlEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
+    `• *COOKIE URL:* \`${state.cookieUrl || 'Not set'}\`\n` +
+    `• *Loaded Cookie:* \`${state.cookieValue ? 'Available' : 'Empty'}\``;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('✏️ Set COOKIE URL', 'cfg_cookie_url')],
+    [
+      Markup.button.callback(
+        state.cookieUrlEnabled ? '🔴 COOKIE OFF' : '🟢 COOKIE ON',
+        'tgl_cookie_url'
+      ),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+    ],
+    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+  ]);
+
+  return { text, keyboard };
+}
+
 function getDeleteByCountryPayload() {
   const countryGroups = new Map();
   for (const item of state.numberEntries) {
@@ -623,56 +743,6 @@ function getDeleteByCountryPayload() {
   };
 }
 
-function getApiSetupPayload() {
-  const text =
-    `🔌 *API SETUP*\n\n` +
-    `• *API Status:* *${state.apiEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
-    `• *API URL:* \`${state.apiUrl || 'Not set'}\`\n` +
-    `• *API Key:* \`${maskSecret(state.apiKey)}\``;
-
-  const keyboard = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('🌐 Set API URL', 'cfg_api_url'),
-      Markup.button.callback('🔑 Set API Key', 'cfg_api_key')
-    ],
-    [
-      Markup.button.callback(
-        state.apiEnabled ? '🔴 API OFF' : '🟢 API ON',
-        state.apiEnabled ? 'api_off_btn' : 'api_on_btn'
-      ),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
-    ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
-  ]);
-
-  return { text, keyboard };
-}
-
-function getSocketSetupPayload() {
-  const text =
-    `⚡ *SOCKET SETUP*\n\n` +
-    `• *Socket Status:* *${state.socketEnabled ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
-    `• *Socket URL:* \`${state.socketUrl}${state.socketPath}\`\n` +
-    `• *Cookie:* \`${state.socketCookie ? 'Set' : 'Not set'}\``;
-
-  const keyboard = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('🔌 Set Socket URL', 'cfg_socket_url'),
-      Markup.button.callback('🍪 Set Cookie', 'cfg_socket_cookie')
-    ],
-    [
-      Markup.button.callback(
-        state.socketEnabled ? '🔴 Socket OFF' : '🟢 Socket ON',
-        state.socketEnabled ? 'socket_off_btn' : 'socket_on_btn'
-      ),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
-    ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
-  ]);
-
-  return { text, keyboard };
-}
-
 function getGroupSetupPayload() {
   const text =
     `👥 *GROUP SETUP*\n\n` +
@@ -703,18 +773,19 @@ function getGroupSetupPayload() {
   return { text, keyboard };
 }
 
-// HTTP REST API
+// HTTP REST API (API URL ও API KEY উভয়ই ON থাকলে বা API URL ON থাকলে কাজ করবে)
 async function fetchOtpViaApi(phone) {
-  if (!state.apiEnabled || !state.apiUrl || !phone) return null;
-  const res = await axios.get(state.apiUrl, {
-    params: { api_key: state.apiKey, action: 'getOtp', number: phone, phone },
-    timeout: 10000
-  });
+  if (!state.apiUrlEnabled || !state.apiUrl || !phone) return null;
+  const params = { action: 'getOtp', number: phone, phone };
+  if (state.apiKeyEnabled && state.apiKey) {
+    params.api_key = state.apiKey;
+  }
+  const res = await axios.get(state.apiUrl, { params, timeout: 10000 });
   const d = res.data || {};
   return d.otp || d.code || d.sms_code || d.data?.otp || d.data?.code || null;
 }
 
-// Socket.IO (শুধুমাত্র state.socketEnabled true হলেই কানেক্ট করবে)
+// Socket.IO (শুধুমাত্র state.socketUrlEnabled ও state.socketUrl সেট থাকলে কানেক্ট হবে)
 let socketClient = null;
 let socketConnected = false;
 
@@ -728,15 +799,17 @@ function initSocket() {
   }
   socketConnected = false;
 
-  if (!state.socketEnabled || !state.socketUrl) {
+  if (!state.socketUrlEnabled || !state.socketUrl) {
     return;
   }
 
   const extraHeaders = {};
-  if (state.socketCookie) extraHeaders.Cookie = state.socketCookie;
+  if (state.cookieUrlEnabled && state.cookieValue) {
+    extraHeaders.Cookie = state.cookieValue;
+  }
 
   socketClient = io(state.socketUrl, {
-    path: state.socketPath || '/live/socket.io/',
+    path: state.socketPath || '/socket.io/',
     transports: ['websocket'],
     reconnection: true,
     reconnectionAttempts: Infinity,
@@ -756,7 +829,7 @@ function initSocket() {
 
   socketClient.on('connect_error', (err) => {
     socketConnected = false;
-    if (state.socketEnabled) {
+    if (state.socketUrlEnabled) {
       console.log('Socket.IO error (fallback ready):', err.message);
     }
   });
@@ -799,7 +872,7 @@ setInterval(async () => {
     }
     for (const item of sess.batchEntries) {
       let otp = await getSavedOtp(item.phone);
-      if (!otp && state.apiEnabled) {
+      if (!otp && state.apiUrlEnabled) {
         try {
           otp = await fetchOtpViaApi(item.phone);
           if (otp) await saveOtp(item.phone, otp);
@@ -871,8 +944,10 @@ bot.hears('💠 ADMIN PANEL', async (ctx) => {
 });
 
 bot.action('back_admin_main', (ctx) => renderPayload(ctx, getMainAdminPayload));
-bot.action('sub_api_menu', (ctx) => renderPayload(ctx, getApiSetupPayload));
-bot.action('sub_socket_menu', (ctx) => renderPayload(ctx, getSocketSetupPayload));
+bot.action('sub_api_url_menu', (ctx) => renderPayload(ctx, getApiUrlSetupPayload));
+bot.action('sub_api_key_menu', (ctx) => renderPayload(ctx, getApiKeySetupPayload));
+bot.action('sub_socket_url_menu', (ctx) => renderPayload(ctx, getSocketUrlSetupPayload));
+bot.action('sub_cookie_url_menu', (ctx) => renderPayload(ctx, getCookieUrlSetupPayload));
 bot.action('sub_group_menu', (ctx) => renderPayload(ctx, getGroupSetupPayload));
 bot.action('sub_delete_country', (ctx) => renderPayload(ctx, getDeleteByCountryPayload));
 
@@ -900,29 +975,54 @@ bot.action(/^del_cnt_(.+)$/, async (ctx) => {
   );
 });
 
-// সিঙ্গেল ON / OFF ও All OFF বাটন হ্যান্ডলার
-bot.action('socket_on_btn', async (ctx) => {
+// ৪টির আলাদা ON / OFF টগল বাটন
+bot.action('tgl_api_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await setSocketEnabled(true);
-  await renderPayload(ctx, getSocketSetupPayload, 'Socket ON হয়েছে');
+  state.apiUrlEnabled = !state.apiUrlEnabled;
+  await dbPut('config/apiUrlEnabled', state.apiUrlEnabled);
+  await renderPayload(
+    ctx,
+    getApiUrlSetupPayload,
+    state.apiUrlEnabled ? 'API URL ON' : 'API URL OFF'
+  );
 });
 
-bot.action('socket_off_btn', async (ctx) => {
+bot.action('tgl_api_key', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await setSocketEnabled(false);
-  await renderPayload(ctx, getSocketSetupPayload, 'Socket OFF হয়েছে');
+  state.apiKeyEnabled = !state.apiKeyEnabled;
+  await dbPut('config/apiKeyEnabled', state.apiKeyEnabled);
+  await renderPayload(
+    ctx,
+    getApiKeySetupPayload,
+    state.apiKeyEnabled ? 'API KEY ON' : 'API KEY OFF'
+  );
 });
 
-bot.action('api_on_btn', async (ctx) => {
+bot.action('tgl_socket_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await setApiEnabled(true);
-  await renderPayload(ctx, getApiSetupPayload, 'API ON হয়েছে');
+  state.socketUrlEnabled = !state.socketUrlEnabled;
+  await dbPut('config/socketUrlEnabled', state.socketUrlEnabled);
+  initSocket();
+  await renderPayload(
+    ctx,
+    getSocketUrlSetupPayload,
+    state.socketUrlEnabled ? 'SOCKET URL ON' : 'SOCKET URL OFF'
+  );
 });
 
-bot.action('api_off_btn', async (ctx) => {
+bot.action('tgl_cookie_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await setApiEnabled(false);
-  await renderPayload(ctx, getApiSetupPayload, 'API OFF হয়েছে');
+  state.cookieUrlEnabled = !state.cookieUrlEnabled;
+  await dbPut('config/cookieUrlEnabled', state.cookieUrlEnabled);
+  if (state.cookieUrlEnabled && state.cookieUrl) {
+    await syncCookieFromUrlIfEnabled();
+  }
+  initSocket();
+  await renderPayload(
+    ctx,
+    getCookieUrlSetupPayload,
+    state.cookieUrlEnabled ? 'COOKIE URL ON' : 'COOKIE URL OFF'
+  );
 });
 
 bot.action('all_off_btn', async (ctx) => {
@@ -931,7 +1031,6 @@ bot.action('all_off_btn', async (ctx) => {
   await renderPayload(ctx, getMainAdminPayload, 'সবকিছু OFF করা হয়েছে');
 });
 
-// Add Number শুরু (ধাপ ১: Service)
 bot.action('adm_add_number', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) {
     return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
@@ -964,21 +1063,27 @@ function startFieldPrompt(stepKey, promptMsg) {
     }
     state.adminWizard.set(ctx.from.id, { step: stepKey, draft: {} });
     await ctx.answerCbQuery();
-    await ctx.reply(promptMsg, { parse_mode: 'Markdown' });
+    await ctx.reply(`${promptMsg}\n\n_(বাতিল করতে /cancel লিখুন)_`, {
+      parse_mode: 'Markdown'
+    });
   };
 }
+
+bot.command('cancel', async (ctx) => {
+  if (state.adminWizard.has(ctx.from.id)) {
+    state.adminWizard.delete(ctx.from.id);
+    await ctx.reply('✅ সেটআপ বাতিল করা হয়েছে।');
+  }
+});
 
 bot.action('adm_main_link', startFieldPrompt('set_main_link', '🔗 নতুন *Main Group Link* পাঠান:'));
 bot.action('adm_main_id', startFieldPrompt('set_main_id', '🆔 নতুন *Main Group ID* পাঠান:'));
 bot.action('adm_otp_link', startFieldPrompt('set_otp_link', '🔗 নতুন *OTP Group Link* পাঠান:'));
 bot.action('adm_otp_id', startFieldPrompt('set_otp_id', '🆔 নতুন *OTP Group ID* পাঠান:'));
-bot.action('cfg_socket_url', startFieldPrompt('set_socket_url', '🔌 নতুন *Socket URL* পাঠান:'));
-bot.action(
-  'cfg_socket_cookie',
-  startFieldPrompt('set_socket_cookie', '🍪 নতুন *Socket Cookie* পাঠান (বা `clear` লিখুন):')
-);
+bot.action('cfg_socket_url', startFieldPrompt('set_socket_url', '⚡ নতুন *SOCKET URL* পাঠান:'));
+bot.action('cfg_cookie_url', startFieldPrompt('set_cookie_url', '🍪 নতুন *COOKIE URL* পাঠান:'));
 bot.action('cfg_api_url', startFieldPrompt('set_api_url', '🌐 নতুন *API URL* পাঠান:'));
-bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🔑 নতুন *API Key* পাঠান:'));
+bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🔑 নতুন *API KEY* পাঠান:'));
 
 bot.command('setotp', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
@@ -1020,10 +1125,6 @@ bot.hears('📄 NUMBER FILE', async (ctx) => {
 });
 
 async function showServiceSelection(ctx, isEdit = false) {
-  if (!state.socketEnabled && !state.apiEnabled && !state.numberEntries.length) {
-    return ctx.reply('⚠️ বর্তমানে নম্বর সার্ভিস OFF আছে।');
-  }
-
   const services = [...new Set(state.numberEntries.map((e) => e.service).filter(Boolean))];
   if (!services.length) {
     return ctx.reply('⚠️ এখন কোনো সার্ভিস বা নম্বর স্টকে নেই।');
@@ -1484,18 +1585,22 @@ bot.on('text', async (ctx) => {
       await dbPut('config/socketUrl', origin);
       await dbPut('config/socketPath', path);
       initSocket();
-      await ctx.reply(`✅ Socket URL সেট হয়েছে:\n\`${origin}${path}\``, {
+      await ctx.reply(`✅ SOCKET URL সেট হয়েছে:\n\`${origin}${path}\``, {
         parse_mode: 'Markdown'
       });
       return;
     }
 
-    if (current.step === 'set_socket_cookie') {
-      const val = inputText.toLowerCase() === 'clear' ? '' : inputText;
-      state.socketCookie = val;
-      await dbPut('config/socketCookie', val);
-      initSocket();
-      await ctx.reply(val ? '✅ Socket Cookie সেট হয়েছে।' : '✅ Socket Cookie মুছে ফেলা হয়েছে।');
+    if (current.step === 'set_cookie_url') {
+      state.cookieUrl = inputText;
+      await dbPut('config/cookieUrl', inputText);
+      if (state.cookieUrlEnabled) {
+        await syncCookieFromUrlIfEnabled();
+        initSocket();
+      }
+      await ctx.reply(`✅ COOKIE URL সেট হয়েছে:\n\`${inputText}\``, {
+        parse_mode: 'Markdown'
+      });
       return;
     }
 
@@ -1511,7 +1616,7 @@ bot.on('text', async (ctx) => {
     if (current.step === 'set_api_key') {
       state.apiKey = inputText;
       await dbPut('config/apiKey', inputText);
-      await ctx.reply('✅ API Key সেট হয়েছে।');
+      await ctx.reply('✅ API KEY সেট হয়েছে।');
       return;
     }
   }
@@ -1556,13 +1661,16 @@ if (SELF_URL) {
     console.log('FIREBASE_DB_URL not set. Using local memory only.');
   } else {
     const [
-      savedSocketEnabled,
-      savedApiEnabled,
-      savedSocketUrl,
-      savedSocketPath,
-      savedCookie,
+      savedApiUrlEnabled,
+      savedApiKeyEnabled,
+      savedSocketUrlEnabled,
+      savedCookieUrlEnabled,
       savedApiUrl,
       savedApiKey,
+      savedSocketUrl,
+      savedSocketPath,
+      savedCookieUrl,
+      savedCookieValue,
       savedMainLink,
       savedMainId,
       savedOtpLink,
@@ -1572,13 +1680,16 @@ if (SELF_URL) {
       savedUsers,
       savedOtpStats
     ] = await Promise.all([
-      dbGet('config/socketEnabled'),
-      dbGet('config/apiEnabled'),
-      dbGet('config/socketUrl'),
-      dbGet('config/socketPath'),
-      dbGet('config/socketCookie'),
+      dbGet('config/apiUrlEnabled'),
+      dbGet('config/apiKeyEnabled'),
+      dbGet('config/socketUrlEnabled'),
+      dbGet('config/cookieUrlEnabled'),
       dbGet('config/apiUrl'),
       dbGet('config/apiKey'),
+      dbGet('config/socketUrl'),
+      dbGet('config/socketPath'),
+      dbGet('config/cookieUrl'),
+      dbGet('config/cookieValue'),
       dbGet('config/mainGroupLink'),
       dbGet('config/mainGroupId'),
       dbGet('config/otpGroupLink'),
@@ -1589,13 +1700,18 @@ if (SELF_URL) {
       dbGet('stats/otps')
     ]);
 
-    if (typeof savedSocketEnabled === 'boolean') state.socketEnabled = savedSocketEnabled;
-    if (typeof savedApiEnabled === 'boolean') state.apiEnabled = savedApiEnabled;
-    if (savedSocketUrl) state.socketUrl = savedSocketUrl;
-    if (savedSocketPath) state.socketPath = savedSocketPath;
-    if (savedCookie) state.socketCookie = savedCookie;
+    if (typeof savedApiUrlEnabled === 'boolean') state.apiUrlEnabled = savedApiUrlEnabled;
+    if (typeof savedApiKeyEnabled === 'boolean') state.apiKeyEnabled = savedApiKeyEnabled;
+    if (typeof savedSocketUrlEnabled === 'boolean') state.socketUrlEnabled = savedSocketUrlEnabled;
+    if (typeof savedCookieUrlEnabled === 'boolean') state.cookieUrlEnabled = savedCookieUrlEnabled;
+
     if (savedApiUrl) state.apiUrl = savedApiUrl;
     if (savedApiKey) state.apiKey = savedApiKey;
+    if (savedSocketUrl) state.socketUrl = savedSocketUrl;
+    if (savedSocketPath) state.socketPath = savedSocketPath;
+    if (savedCookieUrl) state.cookieUrl = savedCookieUrl;
+    if (savedCookieValue) state.cookieValue = savedCookieValue;
+
     if (savedMainLink) state.mainGroupLink = savedMainLink;
     if (savedMainId) state.mainGroupId = savedMainId;
     if (savedOtpLink) state.otpGroupLink = savedOtpLink;
@@ -1614,6 +1730,9 @@ if (SELF_URL) {
     }
   }
 
+  if (state.cookieUrlEnabled && state.cookieUrl) {
+    await syncCookieFromUrlIfEnabled();
+  }
   initSocket();
   await bot.launch();
   console.log('Bot @number_24_bot with Admin Panel is running...');
