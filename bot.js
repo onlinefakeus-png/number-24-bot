@@ -95,7 +95,6 @@ function attachCountryCode(rawNumber, dialCode = '') {
     if (digits.startsWith(dialCode)) {
       return `+${digits}`;
     }
-    // স্থানীয় ০ দিয়ে শুরু হলে ০ বাদ দিয়ে কান্ট্রি কোড বসায়
     const withoutLeadingZero = digits.replace(/^0+/, '');
     return `+${dialCode}${withoutLeadingZero}`;
   }
@@ -120,7 +119,11 @@ const state = {
   numberEntries: [],
   users: [],
   otpsByPhone: {},
-  // userId -> { service, countryKey, countryLabel, batchEntries: [], offset: number, autoChecker: boolean, stripCC: boolean, otpDelivered: boolean }
+  // দেশভিত্তিক কোড পরিসংখ্যান: { total: number, byCountry: { [countryKey]: { label: string, count: number } } }
+  otpStats: {
+    total: 0,
+    byCountry: {}
+  },
   userSession: new Map(),
 
   // স্টেট ট্র্যাকিং
@@ -153,6 +156,10 @@ async function dbPut(path, data) {
 
 async function persistEntries() {
   await dbPut('pool/entries', state.numberEntries);
+}
+
+async function persistOtpStats() {
+  await dbPut('stats/otps', state.otpStats);
 }
 
 async function registerUser(userId) {
@@ -190,6 +197,104 @@ async function setProviderMode(nextMode) {
 
 function normalizePhoneKey(phone) {
   return String(phone || '').replace(/[^\d]/g, '');
+}
+
+// নম্বর থেকে দেশ শনাক্ত করা (পুল অথবা ডায়ালিং কোড থেকে)
+function detectCountryForPhone(phone) {
+  const cleanDigits = normalizePhoneKey(phone);
+
+  const matchedEntry = state.numberEntries.find(
+    (e) => normalizePhoneKey(e.phone) === cleanDigits
+  );
+  if (matchedEntry) {
+    return {
+      key: matchedEntry.countryKey || resolveCountryInfo(matchedEntry.countryLabel).key,
+      label: matchedEntry.countryLabel || resolveCountryInfo(matchedEntry.countryKey).label
+    };
+  }
+
+  for (const [, sess] of state.userSession.entries()) {
+    if (!sess || !Array.isArray(sess.batchEntries)) continue;
+    const found = sess.batchEntries.find(
+      (b) => normalizePhoneKey(b.phone) === cleanDigits
+    );
+    if (found) {
+      return {
+        key: found.countryKey || resolveCountryInfo(found.countryLabel).key,
+        label: found.countryLabel || resolveCountryInfo(found.countryKey).label
+      };
+    }
+  }
+
+  // ডায়ালিং কোড মিলিয়ে দেখা (দীর্ঘ কোড আগে চেক করা হবে)
+  const sortedByDialLen = [...COUNTRY_META]
+    .filter((c) => c.dial)
+    .sort((a, b) => b.dial.length - a.dial.length);
+
+  for (const c of sortedByDialLen) {
+    if (cleanDigits.startsWith(c.dial)) {
+      return {
+        key: c.name.toLowerCase(),
+        label: `${c.flag} ${c.name} (${c.iso})`
+      };
+    }
+  }
+
+  return {
+    key: 'unknown',
+    label: '🌍 Unknown Country'
+  };
+}
+
+async function recordCountryOtpTraffic(phone) {
+  const country = detectCountryForPhone(phone);
+  if (!state.otpStats || typeof state.otpStats !== 'object') {
+    state.otpStats = { total: 0, byCountry: {} };
+  }
+  if (!state.otpStats.byCountry || typeof state.otpStats.byCountry !== 'object') {
+    state.otpStats.byCountry = {};
+  }
+
+  const current = state.otpStats.byCountry[country.key] || {
+    label: country.label,
+    count: 0
+  };
+  current.label = country.label || current.label;
+  current.count = (Number(current.count) || 0) + 1;
+  state.otpStats.byCountry[country.key] = current;
+  state.otpStats.total = (Number(state.otpStats.total) || 0) + 1;
+
+  await persistOtpStats();
+}
+
+function buildTrafficReportText() {
+  const totalCodes = Number(state.otpStats?.total) || 0;
+  const byCountryObj = state.otpStats?.byCountry || {};
+  const entries = Object.values(byCountryObj)
+    .filter((item) => item && Number(item.count) > 0)
+    .sort((a, b) => Number(b.count) - Number(a.count));
+
+  if (!totalCodes || !entries.length) {
+    return (
+      `📡 *TRAFFIC REPORT*\n\n` +
+      `• মোট কোড: \`0\`টি\n` +
+      `• দেশ: \`0\`টি\n\n` +
+      `এখনো প্যানেলে কোনো কোড আসেনি।`
+    );
+  }
+
+  const lines = entries.map((item) => {
+    const cCount = Number(item.count) || 0;
+    const percent = ((cCount / totalCodes) * 100).toFixed(1);
+    return `• ${item.label}: *${cCount}/${totalCodes}* (*${percent}%*)`;
+  });
+
+  return (
+    `📡 *TRAFFIC REPORT*\n\n` +
+    `• মোট কোড: *${totalCodes}*টি\n` +
+    `• মোট দেশ: *${entries.length}*টি\n\n` +
+    `${lines.join('\n')}`
+  );
 }
 
 function formatDisplayPhone(rawPhone, stripCC = false, dialCode = '') {
@@ -235,11 +340,18 @@ async function saveOtp(phone, otp) {
   if (!phone || !otp) return;
   const cleanPhone = String(phone).trim();
   const key = normalizePhoneKey(cleanPhone) || cleanPhone;
+  const alreadySaved = Boolean(state.otpsByPhone[key]?.otp);
+
   state.otpsByPhone[key] = { otp: String(otp), updatedAt: Date.now() };
   await dbPut(`otps/${encodeURIComponent(key)}`, {
     otp: String(otp),
     updatedAt: Date.now()
   });
+
+  if (!alreadySaved) {
+    await recordCountryOtpTraffic(cleanPhone);
+  }
+
   await notifyUserOtpIfWaiting(cleanPhone, String(otp));
 }
 
@@ -412,6 +524,7 @@ function getMainAdminPayload() {
   const text =
     `💠 *ADMIN PANEL*\n\n` +
     `• *Saved Numbers:* \`${state.numberEntries.length}\`\n` +
+    `• *Total Codes:* \`${state.otpStats.total || 0}\`\n` +
     `• *Total Users:* \`${state.users.length}\`\n` +
     `• *Mode:* *${providerMode.toUpperCase()}*\n` +
     `• *Socket:* *${socketOn ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
@@ -689,7 +802,6 @@ bot.action('sub_api_menu', (ctx) => renderPayload(ctx, getApiSetupPayload));
 bot.action('sub_socket_menu', (ctx) => renderPayload(ctx, getSocketSetupPayload));
 bot.action('sub_group_menu', (ctx) => renderPayload(ctx, getGroupSetupPayload));
 
-// অ্যাডমিন থেকে সব স্টক মোছার বাটন (শুধুমাত্র অ্যাডমিন চাইলে মুছবে)
 bot.action('adm_clear_stock', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) {
     return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
@@ -792,7 +904,7 @@ bot.hears('🆘 SUPPORT', async (ctx) => {
   await ctx.reply('🆘 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
 });
 
-// NUMBER FILE বাটন (দেশ ও সার্ভিস অনুযায়ী সংরক্ষিত নম্বর সামারি)
+// NUMBER FILE বাটন
 bot.hears('📄 NUMBER FILE', async (ctx) => {
   await registerUser(ctx.from.id);
   if (!state.numberEntries.length) {
@@ -864,7 +976,7 @@ bot.hears('📞 GET NUMBER', async (ctx) => {
   await showServiceSelection(ctx, false);
 });
 
-// ২. Country নির্বাচন (প্রত্যেক দেশের পতাকা ও নামসহ আলাদা বাটন)
+// ২. Country নির্বাচন
 async function showCountrySelection(ctx, service, isEdit = true) {
   const entriesForService = state.numberEntries.filter(
     (e) => e.service.toLowerCase() === service.toLowerCase()
@@ -939,7 +1051,7 @@ bot.action('back_srv_list', async (ctx) => {
   await showServiceSelection(ctx, true);
 });
 
-// ৩. ৩টা করে নম্বর দেখানো ও Change Number (নম্বর না মুছে পুল থেকেই নেয়)
+// ৩. ৩টা করে নম্বর দেখানো ও Change Number
 async function buildAssignedCard(userId, service, countryKey, options = {}) {
   const existingSess = state.userSession.get(userId) || {};
   const autoChecker =
@@ -984,9 +1096,12 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     offset = 0;
   }
 
-  let picked = options.keepCurrentBatch && Array.isArray(existingSess.batchEntries) && existingSess.batchEntries.length
-    ? existingSess.batchEntries
-    : [];
+  let picked =
+    options.keepCurrentBatch &&
+    Array.isArray(existingSess.batchEntries) &&
+    existingSess.batchEntries.length
+      ? existingSess.batchEntries
+      : [];
 
   if (!picked.length || options.advanceBatch || !options.keepCurrentBatch) {
     picked = [];
@@ -1157,13 +1272,13 @@ bot.hears('👛 WALLET', async (ctx) => {
   await registerUser(ctx.from.id);
   return ctx.reply('👛 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
 });
+
+// TRAFFIC বাটন: প্যানেলে কতগুলো কোড গেছে, কোন দেশের এবং কত % পড়েছে তা দেখায়
 bot.hears('📡 TRAFFIC', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply(
-    `📡 মোড: *${providerMode.toUpperCase()}* | Socket: ${socketConnected ? '🟢 Connected' : '🔴 Disconnected'} | Saved Stock: \`${state.numberEntries.length}\``,
-    { parse_mode: 'Markdown' }
-  );
+  return ctx.reply(buildTrafficReportText(), { parse_mode: 'Markdown' });
 });
+
 bot.hears('✅ WA CHECKER', async (ctx) => {
   await registerUser(ctx.from.id);
   return ctx.reply('✅ WhatsApp Checker সার্ভিস প্রস্তুত।');
@@ -1367,7 +1482,8 @@ if (SELF_URL) {
       savedOtpId,
       savedJoinCheck,
       savedEntries,
-      savedUsers
+      savedUsers,
+      savedOtpStats
     ] = await Promise.all([
       dbGet('config/providerMode'),
       dbGet('config/socketUrl'),
@@ -1381,7 +1497,8 @@ if (SELF_URL) {
       dbGet('config/otpGroupId'),
       dbGet('config/joinCheck'),
       dbGet('pool/entries'),
-      dbGet('users/list')
+      dbGet('users/list'),
+      dbGet('stats/otps')
     ]);
 
     if (savedMode && ['socket', 'api', 'auto', 'off'].includes(savedMode)) {
@@ -1399,6 +1516,15 @@ if (SELF_URL) {
     if (typeof savedJoinCheck === 'boolean') state.joinCheck = savedJoinCheck;
     if (Array.isArray(savedEntries)) state.numberEntries = savedEntries;
     if (Array.isArray(savedUsers)) state.users = savedUsers;
+    if (savedOtpStats && typeof savedOtpStats === 'object') {
+      state.otpStats = {
+        total: Number(savedOtpStats.total) || 0,
+        byCountry:
+          savedOtpStats.byCountry && typeof savedOtpStats.byCountry === 'object'
+            ? savedOtpStats.byCountry
+            : {}
+      };
+    }
   }
 
   initSocket();
