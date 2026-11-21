@@ -18,9 +18,6 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// 'socket' | 'api' | 'auto' | 'off'
-let providerMode = process.env.PROVIDER_MODE || 'auto';
-
 // দেশ অনুযায়ী পতাকা, ISO কোড ও ডায়ালিং কোড ম্যাপ
 const COUNTRY_META = [
   { keys: ['afghanistan'], name: 'Afghanistan', iso: 'AF', dial: '93', flag: '🇦🇫' },
@@ -102,6 +99,10 @@ function attachCountryCode(rawNumber, dialCode = '') {
 }
 
 const state = {
+  // স্বাধীন Socket ও API অন/অফ ফ্ল্যাগ (ডিফল্টে Socket OFF যাতে লগে অযথা এরর না আসে)
+  socketEnabled: process.env.SOCKET_ENABLED === 'true',
+  apiEnabled: process.env.API_ENABLED !== 'false',
+
   socketUrl: process.env.SOCKET_URL || 'https://www.ivasms.com',
   socketPath: process.env.SOCKET_PATH || '/live/socket.io/',
   socketCookie: process.env.SOCKET_COOKIE || '',
@@ -119,7 +120,6 @@ const state = {
   numberEntries: [],
   users: [],
   otpsByPhone: {},
-  // দেশভিত্তিক কোড পরিসংখ্যান: { total: number, byCountry: { [countryKey]: { label: string, count: number } } }
   otpStats: {
     total: 0,
     byCountry: {}
@@ -189,9 +189,31 @@ function parseSocketInput(rawInput) {
   }
 }
 
-async function setProviderMode(nextMode) {
-  providerMode = nextMode;
-  await dbPut('config/providerMode', nextMode);
+function getActiveModeLabel() {
+  if (state.socketEnabled && state.apiEnabled) return 'SOCKET + API';
+  if (state.socketEnabled) return 'SOCKET';
+  if (state.apiEnabled) return 'API';
+  return 'OFF';
+}
+
+async function setSocketEnabled(enabled) {
+  state.socketEnabled = Boolean(enabled);
+  await dbPut('config/socketEnabled', state.socketEnabled);
+  initSocket();
+}
+
+async function setApiEnabled(enabled) {
+  state.apiEnabled = Boolean(enabled);
+  await dbPut('config/apiEnabled', state.apiEnabled);
+}
+
+async function turnAllOff() {
+  state.socketEnabled = false;
+  state.apiEnabled = false;
+  await Promise.all([
+    dbPut('config/socketEnabled', false),
+    dbPut('config/apiEnabled', false)
+  ]);
   initSocket();
 }
 
@@ -199,7 +221,6 @@ function normalizePhoneKey(phone) {
   return String(phone || '').replace(/[^\d]/g, '');
 }
 
-// নম্বর থেকে দেশ শনাক্ত করা (পুল অথবা ডায়ালিং কোড থেকে)
 function detectCountryForPhone(phone) {
   const cleanDigits = normalizePhoneKey(phone);
 
@@ -226,7 +247,6 @@ function detectCountryForPhone(phone) {
     }
   }
 
-  // ডায়ালিং কোড মিলিয়ে দেখা (দীর্ঘ কোড আগে চেক করা হবে)
   const sortedByDialLen = [...COUNTRY_META]
     .filter((c) => c.dial)
     .sort((a, b) => b.dial.length - a.dial.length);
@@ -368,7 +388,6 @@ async function getSavedOtp(phone) {
   return null;
 }
 
-// নম্বর সংগ্রহ ও অটো কান্ট্রি কোড যুক্ত করা
 function extractFormattedPhones(rawText, dialCode = '') {
   const tokens = String(rawText || '').split(/[\r\n,;\t]+/);
   const result = [];
@@ -497,7 +516,6 @@ async function sendGroupVerifyPrompt(ctx) {
   );
 }
 
-// মেইন Reply Keyboard
 function getMainReplyKeyboard(isAdmin) {
   const rows = [
     ['📞 GET NUMBER'],
@@ -516,25 +534,22 @@ function maskSecret(val) {
   return `${val.slice(0, 3)}***${val.slice(-3)}`;
 }
 
-// মেইন অ্যাডমিন প্যানেল
+// মেইন অ্যাডমিন প্যানেল: সিঙ্গেল ও All OFF বাটন + দেশভিত্তিক ডিলিট বাটন
 function getMainAdminPayload() {
-  const socketOn = providerMode === 'socket' || providerMode === 'auto';
-  const apiOn = providerMode === 'api' || providerMode === 'auto';
-
   const text =
     `💠 *ADMIN PANEL*\n\n` +
     `• *Saved Numbers:* \`${state.numberEntries.length}\`\n` +
     `• *Total Codes:* \`${state.otpStats.total || 0}\`\n` +
     `• *Total Users:* \`${state.users.length}\`\n` +
-    `• *Mode:* *${providerMode.toUpperCase()}*\n` +
-    `• *Socket:* *${socketOn ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
-    `• *API:* *${apiOn ? '🟢 ON' : '🔴 OFF'}*\n` +
+    `• *Active Mode:* *${getActiveModeLabel()}*\n` +
+    `• *Socket:* *${state.socketEnabled ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
+    `• *API:* *${state.apiEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
     `• *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}`;
 
   const keyboard = Markup.inlineKeyboard([
     [
       Markup.button.callback('➕ Add Number', 'adm_add_number'),
-      Markup.button.callback('🗑️ Clear All Stock', 'adm_clear_stock')
+      Markup.button.callback('🗑️ Delete by Country', 'sub_delete_country')
     ],
     [
       Markup.button.callback('🔌 API Setup', 'sub_api_menu'),
@@ -543,21 +558,75 @@ function getMainAdminPayload() {
     [Markup.button.callback('👥 Group Setup', 'sub_group_menu')],
     [
       Markup.button.callback(
-        providerMode === 'auto' ? '🔄 Auto (ACTIVE)' : '🔄 Auto Mode',
-        'mode_auto'
+        state.socketEnabled ? '🔴 Socket OFF' : '🟢 Socket ON',
+        state.socketEnabled ? 'socket_off_btn' : 'socket_on_btn'
       ),
-      Markup.button.callback('⛔ All OFF', 'mode_off')
-    ]
+      Markup.button.callback(
+        state.apiEnabled ? '🔴 API OFF' : '🟢 API ON',
+        state.apiEnabled ? 'api_off_btn' : 'api_on_btn'
+      )
+    ],
+    [Markup.button.callback('⛔ All OFF', 'all_off_btn')]
   ]);
 
   return { text, keyboard };
 }
 
+// দেশ অনুযায়ী নম্বর ডিলিট করার সাব-মেনু (শুধু নির্বাচিত দেশের নম্বর মুছবে)
+function getDeleteByCountryPayload() {
+  const countryGroups = new Map();
+  for (const item of state.numberEntries) {
+    const cKey = item.countryKey || resolveCountryInfo(item.countryLabel).key;
+    const cLabel = item.countryLabel || resolveCountryInfo(cKey).label;
+    const prev = countryGroups.get(cKey) || { label: cLabel, count: 0 };
+    prev.count += 1;
+    countryGroups.set(cKey, prev);
+  }
+
+  const list = Array.from(countryGroups.entries());
+  if (!list.length) {
+    return {
+      text: '🗑️ *DELETE BY COUNTRY*\n\nস্টকে কোনো নম্বর নেই।',
+      keyboard: Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+      ])
+    };
+  }
+
+  const rows = [];
+  for (let i = 0; i < list.length; i += 2) {
+    const [k1, info1] = list[i];
+    const row = [
+      Markup.button.callback(
+        `🗑️ ${info1.label} (${info1.count})`,
+        `del_cnt_${encodeURIComponent(k1)}`
+      )
+    ];
+    if (list[i + 1]) {
+      const [k2, info2] = list[i + 1];
+      row.push(
+        Markup.button.callback(
+          `🗑️ ${info2.label} (${info2.count})`,
+          `del_cnt_${encodeURIComponent(k2)}`
+        )
+      );
+    }
+    rows.push(row);
+  }
+  rows.push([Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]);
+
+  return {
+    text:
+      `🗑️ *DELETE BY COUNTRY*\n\n` +
+      `যে দেশের বাটনে চাপবেন, শুধুমাত্র সেই দেশের নম্বরগুলো ডিলিট হবে:`,
+    keyboard: Markup.inlineKeyboard(rows)
+  };
+}
+
 function getApiSetupPayload() {
-  const apiOn = providerMode === 'api' || providerMode === 'auto';
   const text =
     `🔌 *API SETUP*\n\n` +
-    `• *API Status:* *${apiOn ? '🟢 ON' : '🔴 OFF'}*\n` +
+    `• *API Status:* *${state.apiEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
     `• *API URL:* \`${state.apiUrl || 'Not set'}\`\n` +
     `• *API Key:* \`${maskSecret(state.apiKey)}\``;
 
@@ -568,9 +637,10 @@ function getApiSetupPayload() {
     ],
     [
       Markup.button.callback(
-        providerMode === 'api' ? '🔴 API OFF' : '🟢 API ON',
-        providerMode === 'api' ? 'mode_off' : 'mode_api'
-      )
+        state.apiEnabled ? '🔴 API OFF' : '🟢 API ON',
+        state.apiEnabled ? 'api_off_btn' : 'api_on_btn'
+      ),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
     ],
     [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
   ]);
@@ -579,10 +649,9 @@ function getApiSetupPayload() {
 }
 
 function getSocketSetupPayload() {
-  const socketOn = providerMode === 'socket' || providerMode === 'auto';
   const text =
     `⚡ *SOCKET SETUP*\n\n` +
-    `• *Socket Status:* *${socketOn ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
+    `• *Socket Status:* *${state.socketEnabled ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
     `• *Socket URL:* \`${state.socketUrl}${state.socketPath}\`\n` +
     `• *Cookie:* \`${state.socketCookie ? 'Set' : 'Not set'}\``;
 
@@ -593,9 +662,10 @@ function getSocketSetupPayload() {
     ],
     [
       Markup.button.callback(
-        providerMode === 'socket' ? '🔴 Socket OFF' : '🟢 Socket ON',
-        providerMode === 'socket' ? 'mode_off' : 'mode_socket'
-      )
+        state.socketEnabled ? '🔴 Socket OFF' : '🟢 Socket ON',
+        state.socketEnabled ? 'socket_off_btn' : 'socket_on_btn'
+      ),
+      Markup.button.callback('⛔ All OFF', 'all_off_btn')
     ],
     [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
   ]);
@@ -635,7 +705,7 @@ function getGroupSetupPayload() {
 
 // HTTP REST API
 async function fetchOtpViaApi(phone) {
-  if (!state.apiUrl || !phone) return null;
+  if (!state.apiEnabled || !state.apiUrl || !phone) return null;
   const res = await axios.get(state.apiUrl, {
     params: { api_key: state.apiKey, action: 'getOtp', number: phone, phone },
     timeout: 10000
@@ -644,21 +714,23 @@ async function fetchOtpViaApi(phone) {
   return d.otp || d.code || d.sms_code || d.data?.otp || d.data?.code || null;
 }
 
-// Socket.IO
+// Socket.IO (শুধুমাত্র state.socketEnabled true হলেই কানেক্ট করবে)
 let socketClient = null;
 let socketConnected = false;
 
 function initSocket() {
   if (socketClient) {
     try {
+      socketClient.removeAllListeners();
       socketClient.disconnect();
     } catch (_) {}
     socketClient = null;
   }
   socketConnected = false;
 
-  const shouldUseSocket = providerMode === 'socket' || providerMode === 'auto';
-  if (!shouldUseSocket || !state.socketUrl) return;
+  if (!state.socketEnabled || !state.socketUrl) {
+    return;
+  }
 
   const extraHeaders = {};
   if (state.socketCookie) extraHeaders.Cookie = state.socketCookie;
@@ -668,7 +740,7 @@ function initSocket() {
     transports: ['websocket'],
     reconnection: true,
     reconnectionAttempts: Infinity,
-    reconnectionDelay: 3000,
+    reconnectionDelay: 5000,
     extraHeaders
   });
 
@@ -684,7 +756,9 @@ function initSocket() {
 
   socketClient.on('connect_error', (err) => {
     socketConnected = false;
-    console.log('Socket.IO error (fallback ready):', err.message);
+    if (state.socketEnabled) {
+      console.log('Socket.IO error (fallback ready):', err.message);
+    }
   });
 
   const handleIncomingSms = async (payload) => {
@@ -725,7 +799,7 @@ setInterval(async () => {
     }
     for (const item of sess.batchEntries) {
       let otp = await getSavedOtp(item.phone);
-      if (!otp && (providerMode === 'api' || providerMode === 'auto')) {
+      if (!otp && state.apiEnabled) {
         try {
           otp = await fetchOtpViaApi(item.phone);
           if (otp) await saveOtp(item.phone, otp);
@@ -776,7 +850,6 @@ bot.action('verify_group_join', async (ctx) => {
   }
 });
 
-// অ্যাডমিন প্যানেল ও সাব-মেনু নেভিগেশন
 async function renderPayload(ctx, payloadGetter, toastText = '') {
   if (!ADMIN_IDS.includes(ctx.from.id)) {
     return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
@@ -801,14 +874,61 @@ bot.action('back_admin_main', (ctx) => renderPayload(ctx, getMainAdminPayload));
 bot.action('sub_api_menu', (ctx) => renderPayload(ctx, getApiSetupPayload));
 bot.action('sub_socket_menu', (ctx) => renderPayload(ctx, getSocketSetupPayload));
 bot.action('sub_group_menu', (ctx) => renderPayload(ctx, getGroupSetupPayload));
+bot.action('sub_delete_country', (ctx) => renderPayload(ctx, getDeleteByCountryPayload));
 
-bot.action('adm_clear_stock', async (ctx) => {
+// নির্দিষ্ট একটি দেশের নম্বর ডিলিট করা
+bot.action(/^del_cnt_(.+)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) {
     return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
   }
-  state.numberEntries = [];
+  const targetKey = decodeURIComponent(ctx.match[1]);
+  const beforeCount = state.numberEntries.length;
+
+  state.numberEntries = state.numberEntries.filter((item) => {
+    const itemKey = item.countryKey || resolveCountryInfo(item.countryLabel).key;
+    return itemKey !== targetKey;
+  });
+
+  const deletedCount = beforeCount - state.numberEntries.length;
   await persistEntries();
-  await renderPayload(ctx, getMainAdminPayload, 'সব স্টক নম্বর মুছে ফেলা হয়েছে');
+
+  const countryTitle = resolveCountryInfo(targetKey).label;
+  await renderPayload(
+    ctx,
+    getDeleteByCountryPayload,
+    `${countryTitle} এর ${deletedCount}টি নম্বর ডিলিট হয়েছে`
+  );
+});
+
+// সিঙ্গেল ON / OFF ও All OFF বাটন হ্যান্ডলার
+bot.action('socket_on_btn', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  await setSocketEnabled(true);
+  await renderPayload(ctx, getSocketSetupPayload, 'Socket ON হয়েছে');
+});
+
+bot.action('socket_off_btn', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  await setSocketEnabled(false);
+  await renderPayload(ctx, getSocketSetupPayload, 'Socket OFF হয়েছে');
+});
+
+bot.action('api_on_btn', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  await setApiEnabled(true);
+  await renderPayload(ctx, getApiSetupPayload, 'API ON হয়েছে');
+});
+
+bot.action('api_off_btn', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  await setApiEnabled(false);
+  await renderPayload(ctx, getApiSetupPayload, 'API OFF হয়েছে');
+});
+
+bot.action('all_off_btn', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  await turnAllOff();
+  await renderPayload(ctx, getMainAdminPayload, 'সবকিছু OFF করা হয়েছে');
 });
 
 // Add Number শুরু (ধাপ ১: Service)
@@ -823,28 +943,6 @@ bot.action('adm_add_number', async (ctx) => {
     { parse_mode: 'Markdown' }
   );
 });
-
-// মোড পরিবর্তন
-async function handleModeSwitch(ctx, nextMode, label, viewGetter) {
-  if (!ADMIN_IDS.includes(ctx.from.id)) {
-    return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
-  }
-  await setProviderMode(nextMode);
-  await renderPayload(ctx, viewGetter, label);
-}
-
-bot.action('mode_socket', (ctx) =>
-  handleModeSwitch(ctx, 'socket', 'Socket মোড ON হয়েছে', getSocketSetupPayload)
-);
-bot.action('mode_api', (ctx) =>
-  handleModeSwitch(ctx, 'api', 'API মোড ON হয়েছে', getApiSetupPayload)
-);
-bot.action('mode_auto', (ctx) =>
-  handleModeSwitch(ctx, 'auto', 'Auto মোড ON হয়েছে', getMainAdminPayload)
-);
-bot.action('mode_off', (ctx) =>
-  handleModeSwitch(ctx, 'off', 'সব মোড OFF করা হয়েছে', getMainAdminPayload)
-);
 
 bot.action('adm_toggle_join', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) {
@@ -882,7 +980,6 @@ bot.action(
 bot.action('cfg_api_url', startFieldPrompt('set_api_url', '🌐 নতুন *API URL* পাঠান:'));
 bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🔑 নতুন *API Key* পাঠান:'));
 
-// অ্যাডমিন থেকে ম্যানুয়াল OTP পুশ কমান্ড: /setotp <number> <otp>
 bot.command('setotp', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const parts = ctx.message.text.trim().split(/\s+/);
@@ -897,14 +994,12 @@ bot.command('setotp', async (ctx) => {
   });
 });
 
-// সাপোর্ট মেসেজ
 bot.hears('🆘 SUPPORT', async (ctx) => {
   await registerUser(ctx.from.id);
   state.waitingSupportFrom.add(ctx.from.id);
   await ctx.reply('🆘 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
 });
 
-// NUMBER FILE বাটন
 bot.hears('📄 NUMBER FILE', async (ctx) => {
   await registerUser(ctx.from.id);
   if (!state.numberEntries.length) {
@@ -924,9 +1019,8 @@ bot.hears('📄 NUMBER FILE', async (ctx) => {
   );
 });
 
-// GET NUMBER -> ১. Service নির্বাচন
 async function showServiceSelection(ctx, isEdit = false) {
-  if (providerMode === 'off') {
+  if (!state.socketEnabled && !state.apiEnabled && !state.numberEntries.length) {
     return ctx.reply('⚠️ বর্তমানে নম্বর সার্ভিস OFF আছে।');
   }
 
@@ -976,7 +1070,6 @@ bot.hears('📞 GET NUMBER', async (ctx) => {
   await showServiceSelection(ctx, false);
 });
 
-// ২. Country নির্বাচন
 async function showCountrySelection(ctx, service, isEdit = true) {
   const entriesForService = state.numberEntries.filter(
     (e) => e.service.toLowerCase() === service.toLowerCase()
@@ -1051,7 +1144,6 @@ bot.action('back_srv_list', async (ctx) => {
   await showServiceSelection(ctx, true);
 });
 
-// ৩. ৩টা করে নম্বর দেখানো ও Change Number
 async function buildAssignedCard(userId, service, countryKey, options = {}) {
   const existingSess = state.userSession.get(userId) || {};
   const autoChecker =
@@ -1267,13 +1359,11 @@ bot.action('open_otp_group_fallback', async (ctx) => {
   );
 });
 
-// অন্যান্য বাটন
 bot.hears('👛 WALLET', async (ctx) => {
   await registerUser(ctx.from.id);
   return ctx.reply('👛 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
 });
 
-// TRAFFIC বাটন: প্যানেলে কতগুলো কোড গেছে, কোন দেশের এবং কত % পড়েছে তা দেখায়
 bot.hears('📡 TRAFFIC', async (ctx) => {
   await registerUser(ctx.from.id);
   return ctx.reply(buildTrafficReportText(), { parse_mode: 'Markdown' });
@@ -1288,7 +1378,6 @@ bot.hears('🌐 LANGUAGE', async (ctx) => {
   return ctx.reply('🌐 বর্তমান ভাষা: বাংলা (BN)');
 });
 
-// ধাপ ৩-এ .TXT / Number File গ্রহণ
 bot.on('document', async (ctx) => {
   const userId = ctx.from.id;
   await registerUser(userId);
@@ -1322,7 +1411,6 @@ bot.on('document', async (ctx) => {
   }
 });
 
-// টেক্সট হ্যান্ডলার: অ্যাডমিন উইজার্ড / কনফিগ অথবা সাপোর্ট মেসেজ
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   await registerUser(userId);
@@ -1428,7 +1516,6 @@ bot.on('text', async (ctx) => {
     }
   }
 
-  // সাপোর্ট মেসেজ (8771921458)
   if (!state.waitingSupportFrom.has(userId)) return;
   state.waitingSupportFrom.delete(userId);
 
@@ -1449,7 +1536,6 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// Keep-Alive Server
 http
   .createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -1470,7 +1556,8 @@ if (SELF_URL) {
     console.log('FIREBASE_DB_URL not set. Using local memory only.');
   } else {
     const [
-      savedMode,
+      savedSocketEnabled,
+      savedApiEnabled,
       savedSocketUrl,
       savedSocketPath,
       savedCookie,
@@ -1485,7 +1572,8 @@ if (SELF_URL) {
       savedUsers,
       savedOtpStats
     ] = await Promise.all([
-      dbGet('config/providerMode'),
+      dbGet('config/socketEnabled'),
+      dbGet('config/apiEnabled'),
       dbGet('config/socketUrl'),
       dbGet('config/socketPath'),
       dbGet('config/socketCookie'),
@@ -1501,9 +1589,8 @@ if (SELF_URL) {
       dbGet('stats/otps')
     ]);
 
-    if (savedMode && ['socket', 'api', 'auto', 'off'].includes(savedMode)) {
-      providerMode = savedMode;
-    }
+    if (typeof savedSocketEnabled === 'boolean') state.socketEnabled = savedSocketEnabled;
+    if (typeof savedApiEnabled === 'boolean') state.apiEnabled = savedApiEnabled;
     if (savedSocketUrl) state.socketUrl = savedSocketUrl;
     if (savedSocketPath) state.socketPath = savedSocketPath;
     if (savedCookie) state.socketCookie = savedCookie;
