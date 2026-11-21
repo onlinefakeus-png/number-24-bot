@@ -35,14 +35,14 @@ const state = {
   otpGroupId: process.env.OTP_GROUP_ID || '',
   joinCheck: true,
 
-  // Service + Country + Number এন্ট্রি লিস্ট
+  // নম্বর এন্ট্রি, ইউজার লিস্ট ও OTP ডাটা
   numberEntries: [],
+  users: [],
   otpsByPhone: {},
   userLastNumber: {},
 
   // স্টেট ট্র্যাকিং
   waitingSupportFrom: new Set(),
-  // adminId -> { step: string, draft: object }
   adminWizard: new Map()
 };
 
@@ -66,6 +66,15 @@ async function dbPut(path, data) {
   } catch (e) {
     console.error('Firebase PUT error:', e.message);
     return false;
+  }
+}
+
+async function registerUser(userId) {
+  if (!userId) return;
+  const idStr = String(userId);
+  if (!state.users.includes(idStr)) {
+    state.users.push(idStr);
+    await dbPut('users/list', state.users);
   }
 }
 
@@ -116,24 +125,60 @@ async function getSavedOtp(phone) {
   return null;
 }
 
-async function addServiceCountryNumbers(service, country, rawNumbers) {
-  const phones = String(rawNumbers || '')
-    .split(/[\n,]+/)
-    .map((n) => n.trim())
-    .filter(Boolean);
-  if (!phones.length) return 0;
+function extractPhonesFromText(rawText) {
+  return String(rawText || '')
+    .split(/[\r\n,;\s]+/)
+    .map((n) => n.replace(/[^\d+]/g, '').trim())
+    .filter((n) => n.length >= 6);
+}
 
-  let added = 0;
+async function broadcastNewNumbers(service, country, addedCount, sourceLabel) {
+  const userMsg =
+    `🔔 *নতুন নম্বর যুক্ত হয়েছে!*\n\n` +
+    `📱 সার্ভিস: *${service}*\n` +
+    `🌍 দেশ: *${country}*\n` +
+    `🔢 যুক্ত হওয়া নম্বর: *${addedCount}*টি\n` +
+    `📦 মাধ্যম: *${sourceLabel}*`;
+
+  for (const uid of state.users) {
+    try {
+      await bot.telegram.sendMessage(uid, userMsg, { parse_mode: 'Markdown' });
+    } catch (_) {
+      // ব্লক বা ইনঅ্যাক্টিভ ইউজার স্কিপ হবে
+    }
+  }
+}
+
+async function finalizeAddedNumbers(ctx, service, country, rawNumbers, sourceLabel) {
+  const phones = extractPhonesFromText(rawNumbers);
+  if (!phones.length) {
+    await ctx.reply('⚠️ কোনো বৈধ নম্বর পাওয়া যায়নি। আবার চেষ্টা করুন।');
+    return;
+  }
+
   for (const phone of phones) {
     state.numberEntries.push({
       service: service.trim(),
       country: country.trim(),
       phone
     });
-    added++;
   }
   await dbPut('pool/entries', state.numberEntries);
-  return added;
+
+  const addedCount = phones.length;
+
+  // অ্যাডমিনকে নিশ্চিতকরণ বার্তা
+  await ctx.reply(
+    `আসসালামু আলাইকুম স্যার, নাম্বার যুক্ত করা সম্পুর্ন হয়েছে স্যার\n\n` +
+      `📱 সার্ভিস: *${service}*\n` +
+      `🌍 দেশ: *${country}*\n` +
+      `➕ যুক্ত হয়েছে: *${addedCount}*টি\n` +
+      `📦 বর্তমান মোট স্টক: \`${state.numberEntries.length}\``,
+    { parse_mode: 'Markdown' }
+  );
+
+  // সব ইউজারকে নোটিফিকেশন পাঠানো
+  await broadcastNewNumbers(service, country, addedCount, sourceLabel);
 }
 
 // গ্রুপ মেম্বারশিপ যাচাই
@@ -200,7 +245,7 @@ function maskSecret(val) {
   return `${val.slice(0, 3)}***${val.slice(-3)}`;
 }
 
-// মেইন অ্যাডমিন প্যানেল (আলাদা আলাদা সেকশন বাটন)
+// মেইন অ্যাডমিন প্যানেল
 function getMainAdminPayload() {
   const socketOn = providerMode === 'socket' || providerMode === 'auto';
   const apiOn = providerMode === 'api' || providerMode === 'auto';
@@ -208,6 +253,7 @@ function getMainAdminPayload() {
   const text =
     `💠 *ADMIN PANEL*\n\n` +
     `• *Stock Numbers:* \`${state.numberEntries.length}\`\n` +
+    `• *Total Users:* \`${state.users.length}\`\n` +
     `• *Mode:* *${providerMode.toUpperCase()}*\n` +
     `• *Socket:* *${socketOn ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
     `• *API:* *${apiOn ? '🟢 ON' : '🔴 OFF'}*\n` +
@@ -411,6 +457,7 @@ function initSocket() {
 
 // /start
 bot.start(async (ctx) => {
+  await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
   if (!isAdmin && !(await isUserVerifiedInGroups(ctx))) {
     await ctx.reply('স্বাগতম! নিচের মেনু:', getMainReplyKeyboard(false));
@@ -423,6 +470,7 @@ bot.start(async (ctx) => {
 });
 
 bot.action('verify_group_join', async (ctx) => {
+  await registerUser(ctx.from.id);
   const ok = await isUserVerifiedInGroups(ctx);
   if (ok) {
     await ctx.answerCbQuery('✅ ভেরিফাই সফল হয়েছে!');
@@ -447,6 +495,7 @@ async function renderPayload(ctx, payloadGetter, toastText = '') {
 }
 
 bot.hears('💠 ADMIN PANEL', async (ctx) => {
+  await registerUser(ctx.from.id);
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const { text, keyboard } = getMainAdminPayload();
   await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
@@ -464,9 +513,10 @@ bot.action('adm_add_number', async (ctx) => {
   }
   state.adminWizard.set(ctx.from.id, { step: 'ask_service', draft: {} });
   await ctx.answerCbQuery();
-  await ctx.reply('1️⃣ সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` অথবা `Telegram` বা আপনার পছন্দমতো):', {
-    parse_mode: 'Markdown'
-  });
+  await ctx.reply(
+    '1️⃣ সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` অথবা `Telegram` বা আপনার পছন্দমতো):',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // মোড পরিবর্তন
@@ -520,18 +570,43 @@ bot.action('adm_main_id', startFieldPrompt('set_main_id', '🆔 নতুন *Ma
 bot.action('adm_otp_link', startFieldPrompt('set_otp_link', '🔗 নতুন *OTP Group Link* পাঠান:'));
 bot.action('adm_otp_id', startFieldPrompt('set_otp_id', '🆔 নতুন *OTP Group ID* পাঠান:'));
 bot.action('cfg_socket_url', startFieldPrompt('set_socket_url', '🔌 নতুন *Socket URL* পাঠান:'));
-bot.action('cfg_socket_cookie', startFieldPrompt('set_socket_cookie', '🍪 নতুন *Socket Cookie* পাঠান (বা `clear` লিখুন):'));
+bot.action(
+  'cfg_socket_cookie',
+  startFieldPrompt('set_socket_cookie', '🍪 নতুন *Socket Cookie* পাঠান (বা `clear` লিখুন):')
+);
 bot.action('cfg_api_url', startFieldPrompt('set_api_url', '🌐 নতুন *API URL* পাঠান:'));
 bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🔑 নতুন *API Key* পাঠান:'));
 
 // সাপোর্ট মেসেজ
 bot.hears('🆘 SUPPORT', async (ctx) => {
+  await registerUser(ctx.from.id);
   state.waitingSupportFrom.add(ctx.from.id);
   await ctx.reply('🆘 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
 });
 
+// NUMBER FILE বাটন (বর্তমান নম্বর স্টক ও সার্ভিস/দেশ সামারি)
+bot.hears('📄 NUMBER FILE', async (ctx) => {
+  await registerUser(ctx.from.id);
+  if (!state.numberEntries.length) {
+    return ctx.reply('📄 বর্তমানে কোনো নম্বর ফাইল/স্টক যুক্ত নেই।');
+  }
+  const summaryMap = new Map();
+  for (const item of state.numberEntries) {
+    const key = `${item.service} | ${item.country}`;
+    summaryMap.set(key, (summaryMap.get(key) || 0) + 1);
+  }
+  const lines = Array.from(summaryMap.entries()).map(
+    ([key, count]) => `• *${key}*: \`${count}\`টি`
+  );
+  await ctx.reply(
+    `📄 *NUMBER FILE STOCK*\n\n${lines.join('\n')}\n\n📦 মোট নম্বর: \`${state.numberEntries.length}\`টি`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // GET NUMBER
 bot.hears('📞 GET NUMBER', async (ctx) => {
+  await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
   if (!isAdmin && !(await isUserVerifiedInGroups(ctx))) {
     return sendGroupVerifyPrompt(ctx);
@@ -589,31 +664,70 @@ bot.hears('📞 GET NUMBER', async (ctx) => {
 });
 
 // অন্যান্য বাটন
-bot.hears('👛 WALLET', (ctx) => ctx.reply('👛 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।'));
-bot.hears('📡 TRAFFIC', (ctx) =>
-  ctx.reply(
+bot.hears('👛 WALLET', async (ctx) => {
+  await registerUser(ctx.from.id);
+  return ctx.reply('👛 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
+});
+bot.hears('📡 TRAFFIC', async (ctx) => {
+  await registerUser(ctx.from.id);
+  return ctx.reply(
     `📡 মোড: *${providerMode.toUpperCase()}* | Socket: ${socketConnected ? '🟢 Connected' : '🔴 Disconnected'} | Stock: \`${state.numberEntries.length}\``,
     { parse_mode: 'Markdown' }
-  )
-);
-bot.hears('✅ WA CHECKER', (ctx) => ctx.reply('✅ WhatsApp Checker সার্ভিস প্রস্তুত।'));
-bot.hears('🌐 LANGUAGE', (ctx) => ctx.reply('🌐 বর্তমান ভাষা: বাংলা (BN)'));
-bot.hears('📄 NUMBER FILE', (ctx) => ctx.reply('📄 Number File অপশন সক্রিয় আছে।'));
+  );
+});
+bot.hears('✅ WA CHECKER', async (ctx) => {
+  await registerUser(ctx.from.id);
+  return ctx.reply('✅ WhatsApp Checker সার্ভিস প্রস্তুত।');
+});
+bot.hears('🌐 LANGUAGE', async (ctx) => {
+  await registerUser(ctx.from.id);
+  return ctx.reply('🌐 বর্তমান ভাষা: বাংলা (BN)');
+});
+
+// ধাপ ৩-এ .TXT / Number File গ্রহণ
+bot.on('document', async (ctx) => {
+  const userId = ctx.from.id;
+  await registerUser(userId);
+  if (!ADMIN_IDS.includes(userId) || !state.adminWizard.has(userId)) return;
+
+  const current = state.adminWizard.get(userId);
+  if (current.step !== 'ask_numbers') return;
+
+  state.adminWizard.delete(userId);
+  const { service, country } = current.draft;
+  const doc = ctx.message.document;
+
+  try {
+    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+    const resp = await axios.get(fileLink.href, { responseType: 'text', timeout: 20000 });
+    const fileContent = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+    await finalizeAddedNumbers(
+      ctx,
+      service || 'General',
+      country || 'Unknown',
+      fileContent,
+      `Number File (${doc.file_name || 'file.txt'})`
+    );
+  } catch (err) {
+    console.error('Document read error:', err.message);
+    await ctx.reply('❌ ফাইলটি পড়তে সমস্যা হয়েছে। অনুগ্রহ করে .txt ফাইল পাঠান।');
+  }
+});
 
 // টেক্সট হ্যান্ডলার: অ্যাডমিন উইজার্ড / কনফিগ অথবা সাপোর্ট মেসেজ
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
+  await registerUser(userId);
   const inputText = ctx.message.text.trim();
 
   if (ADMIN_IDS.includes(userId) && state.adminWizard.has(userId)) {
     const current = state.adminWizard.get(userId);
 
-    // ধাপ ১: Service -> ধাপ ২: Country -> ধাপ ৩: Numbers
     if (current.step === 'ask_service') {
       current.draft.service = inputText;
       current.step = 'ask_country';
       state.adminWizard.set(userId, current);
-      await ctx.reply('2️⃣ দেশের নাম লিখুন (যেমন: `Bangladesh`, `India`, `USA` ইত্যাদি):', {
+      await ctx.reply('2️⃣ দেশের নাম লিখুন (যেমন: `Bangladesh`, `India`, `USA` বা `🇪🇬 Egypt` ইত্যাদি):', {
         parse_mode: 'Markdown'
       });
       return;
@@ -623,18 +737,16 @@ bot.on('text', async (ctx) => {
       current.draft.country = inputText;
       current.step = 'ask_numbers';
       state.adminWizard.set(userId, current);
-      await ctx.reply('3️⃣ এক বা একাধিক নম্বর পাঠান (প্রতি লাইনে বা কমা দিয়ে আলাদা করে):');
+      await ctx.reply(
+        '3️⃣ এক বা একাধিক নম্বর পাঠান (প্রতি লাইনে/কমা দিয়ে) অথবা `.txt` Number File পাঠান:'
+      );
       return;
     }
 
     if (current.step === 'ask_numbers') {
       state.adminWizard.delete(userId);
       const { service, country } = current.draft;
-      const added = await addServiceCountryNumbers(service, country, inputText);
-      await ctx.reply(
-        `✅ *${added}*টি নম্বর যুক্ত হয়েছে!\n📱 Service: *${service}*\n🌍 Country: *${country}*\n📦 মোট স্টক: \`${state.numberEntries.length}\``,
-        { parse_mode: 'Markdown' }
-      );
+      await finalizeAddedNumbers(ctx, service, country, inputText, 'Manual Input');
       return;
     }
 
@@ -760,7 +872,8 @@ if (SELF_URL) {
       savedOtpLink,
       savedOtpId,
       savedJoinCheck,
-      savedEntries
+      savedEntries,
+      savedUsers
     ] = await Promise.all([
       dbGet('config/providerMode'),
       dbGet('config/socketUrl'),
@@ -773,7 +886,8 @@ if (SELF_URL) {
       dbGet('config/otpGroupLink'),
       dbGet('config/otpGroupId'),
       dbGet('config/joinCheck'),
-      dbGet('pool/entries')
+      dbGet('pool/entries'),
+      dbGet('users/list')
     ]);
 
     if (savedMode && ['socket', 'api', 'auto', 'off'].includes(savedMode)) {
@@ -790,6 +904,7 @@ if (SELF_URL) {
     if (savedOtpId) state.otpGroupId = savedOtpId;
     if (typeof savedJoinCheck === 'boolean') state.joinCheck = savedJoinCheck;
     if (Array.isArray(savedEntries)) state.numberEntries = savedEntries;
+    if (Array.isArray(savedUsers)) state.users = savedUsers;
   }
 
   initSocket();
