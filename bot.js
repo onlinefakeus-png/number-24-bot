@@ -27,11 +27,22 @@ const state = {
   socketCookie: process.env.SOCKET_COOKIE || '',
   apiUrl: process.env.API_URL || '',
   apiKey: process.env.API_KEY || '',
-  waitingSupportFrom: new Set(),
-  // adminId -> 'set_socket_url' | 'set_api_url' | 'set_api_key' | 'set_socket_cookie'
-  adminInputStep: new Map(),
+
+  // গ্রুপ ও Join Check সেটিংস
+  mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/your_main_group_link',
+  mainGroupId: process.env.MAIN_GROUP_ID || '',
+  otpGroupLink: process.env.OTP_GROUP_LINK || 'https://t.me/your_otp_group_link',
+  otpGroupId: process.env.OTP_GROUP_ID || '',
+  joinCheck: true,
+
+  // লোকাল নম্বর পুল ও OTP ডাটা
+  numbers: [],
   otpsByPhone: {},
-  userLastNumber: {}
+  userLastNumber: {},
+
+  // স্টেট ট্র্যাকিং
+  waitingSupportFrom: new Set(),
+  adminInputStep: new Map()
 };
 
 // Firebase Helpers
@@ -59,12 +70,16 @@ async function dbPut(path, data) {
 
 function parseSocketInput(rawInput) {
   const trimmed = String(rawInput || '').trim();
-  // wss://www.ivasms.com/live/socket.io/?EIO=4&transport=websocket বা https://www.ivasms.com
-  const normalized = trimmed.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
+  const normalized = trimmed
+    .replace(/^wss:\/\//i, 'https://')
+    .replace(/^ws:\/\//i, 'http://');
   try {
     const parsed = new URL(normalized);
     const origin = parsed.origin;
-    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/live/socket.io/';
+    const path =
+      parsed.pathname && parsed.pathname !== '/'
+        ? parsed.pathname
+        : '/live/socket.io/';
     return { origin, path };
   } catch (_) {
     return { origin: trimmed, path: state.socketPath || '/live/socket.io/' };
@@ -100,7 +115,72 @@ async function getSavedOtp(phone) {
   return null;
 }
 
-// নিচের বাটন পেট (Reply Keyboard)
+async function addNumbersToPool(rawText) {
+  const lines = String(rawText || '')
+    .split(/[\n,]+/)
+    .map((n) => n.trim())
+    .filter(Boolean);
+  if (!lines.length) return 0;
+
+  const existingSet = new Set(state.numbers);
+  let added = 0;
+  for (const num of lines) {
+    if (!existingSet.has(num)) {
+      state.numbers.push(num);
+      existingSet.add(num);
+      added++;
+    }
+  }
+  await dbPut('pool/numbers', state.numbers);
+  return added;
+}
+
+// গ্রুপ মেম্বারশিপ যাচাই
+async function isUserVerifiedInGroups(ctx) {
+  if (!state.joinCheck) return true;
+  const checks = [];
+  if (state.mainGroupId) checks.push(state.mainGroupId);
+  if (state.otpGroupId) checks.push(state.otpGroupId);
+  if (!checks.length) return true;
+
+  for (const chatId of checks) {
+    try {
+      const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
+      if (!member || ['left', 'kicked', 'restricted'].includes(member.status)) {
+        if (member?.status === 'restricted' && member.is_member === false) {
+          return false;
+        }
+        if (['left', 'kicked'].includes(member?.status)) {
+          return false;
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function sendGroupVerifyPrompt(ctx) {
+  const buttons = [];
+  if (state.mainGroupLink) {
+    buttons.push([Markup.button.url('📢 Join Main Group', state.mainGroupLink)]);
+  }
+  if (state.otpGroupLink) {
+    buttons.push([Markup.button.url('🔐 Join OTP Group', state.otpGroupLink)]);
+  }
+  buttons.push([Markup.button.callback('✅ Verify Join', 'verify_group_join')]);
+
+  await ctx.reply(
+    '🔒 বট ব্যবহার করতে হলে আগে নিচের গ্রুপগুলোতে জয়েন করুন এবং **Verify Join** চাপুন:',
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard(buttons)
+    }
+  );
+}
+
+// নিচের মেইন বাটন পেট
 function getMainReplyKeyboard(isAdmin) {
   const rows = [
     ['📞 GET NUMBER'],
@@ -119,21 +199,42 @@ function maskSecret(val) {
   return `${val.slice(0, 3)}***${val.slice(-3)}`;
 }
 
-// অ্যাডমিন প্যানেল: আলাদা ON/OFF বাটন + Socket URL / API URL / API Key সেট করার বাটন
+// পূর্ণাঙ্গ অ্যাডমিন প্যানেল (নম্বর অ্যাড + গ্রুপ লিংক/আইডি/Join Check + Socket/API কন্ট্রোল)
 function getAdminPanelPayload() {
   const socketOn = providerMode === 'socket' || providerMode === 'auto';
   const apiOn = providerMode === 'api' || providerMode === 'auto';
 
   const text =
     `💠 *ADMIN PANEL*\n\n` +
-    `• বর্তমান মোড: *${providerMode.toUpperCase()}*\n` +
-    `• Socket: *${socketOn ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
-    `• API: *${apiOn ? '🟢 ON' : '🔴 OFF'}*\n\n` +
+    `• *Main Group Link:* ${state.mainGroupLink || 'Not set'}\n` +
+    `• *Main Group ID:* \`${state.mainGroupId || 'Auto'}\`\n` +
+    `• *OTP Group Link:* ${state.otpGroupLink || 'Not set'}\n` +
+    `• *OTP Group ID:* \`${state.otpGroupId || 'Auto'}\`\n` +
+    `• *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}\n` +
+    `• *Stock Numbers:* \`${state.numbers.length}\`\n\n` +
+    `• *Mode:* *${providerMode.toUpperCase()}*\n` +
+    `• *Socket:* *${socketOn ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
+    `• *API:* *${apiOn ? '🟢 ON' : '🔴 OFF'}*\n` +
     `• *Socket URL:* \`${state.socketUrl}${state.socketPath}\`\n` +
     `• *API URL:* \`${state.apiUrl || 'Not set'}\`\n` +
     `• *API Key:* \`${maskSecret(state.apiKey)}\``;
 
   const keyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback('➕ Add Number', 'adm_add_number'),
+      Markup.button.callback(
+        state.joinCheck ? '🟡 Join Check OFF' : '🟢 Join Check ON',
+        'adm_toggle_join'
+      )
+    ],
+    [
+      Markup.button.callback('🔗 Set Main Link', 'adm_main_link'),
+      Markup.button.callback('🆔 Set Main ID', 'adm_main_id')
+    ],
+    [
+      Markup.button.callback('🔗 Set OTP Link', 'adm_otp_link'),
+      Markup.button.callback('🆔 Set OTP ID', 'adm_otp_id')
+    ],
     [
       Markup.button.callback(
         providerMode === 'socket' ? '🔴 Socket OFF' : '🟢 Socket ON',
@@ -261,10 +362,24 @@ function initSocket() {
 // /start
 bot.start(async (ctx) => {
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
+  if (!isAdmin && !(await isUserVerifiedInGroups(ctx))) {
+    await ctx.reply('স্বাগতম! নিচের মেনু:', getMainReplyKeyboard(false));
+    return sendGroupVerifyPrompt(ctx);
+  }
   await ctx.reply(
     'স্বাগতম! নিচের মেনু থেকে অপশন বেছে নিন:',
     getMainReplyKeyboard(isAdmin)
   );
+});
+
+bot.action('verify_group_join', async (ctx) => {
+  const ok = await isUserVerifiedInGroups(ctx);
+  if (ok) {
+    await ctx.answerCbQuery('✅ ভেরিফাই সফল হয়েছে!');
+    await ctx.reply('✅ গ্রুপ ভেরিফিকেশন সম্পন্ন হয়েছে। এখন বট ব্যবহার করতে পারবেন।');
+  } else {
+    await ctx.answerCbQuery('❌ আগে গ্রুপগুলোতে জয়েন করুন।', { show_alert: true });
+  }
 });
 
 // অ্যাডমিন প্যানেল
@@ -297,8 +412,16 @@ bot.action('mode_api', (ctx) => handleModeCallback(ctx, 'api', 'API মোড ON
 bot.action('mode_auto', (ctx) => handleModeCallback(ctx, 'auto', 'Auto মোড ON হয়েছে'));
 bot.action('mode_off', (ctx) => handleModeCallback(ctx, 'off', 'সব মোড OFF করা হয়েছে'));
 
-// Socket URL / API URL / API Key সেট করার প্রম্পট
-function startConfigPrompt(stepKey, promptMsg) {
+bot.action('adm_toggle_join', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) {
+    return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
+  }
+  state.joinCheck = !state.joinCheck;
+  await dbPut('config/joinCheck', state.joinCheck);
+  await refreshAdminMessage(ctx, state.joinCheck ? 'Join Check ON' : 'Join Check OFF');
+});
+
+function startAdminPrompt(stepKey, promptMsg) {
   return async (ctx) => {
     if (!ADMIN_IDS.includes(ctx.from.id)) {
       return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
@@ -310,29 +433,32 @@ function startConfigPrompt(stepKey, promptMsg) {
 }
 
 bot.action(
+  'adm_add_number',
+  startAdminPrompt('add_number', '➕ এক বা একাধিক নম্বর পাঠান (প্রতি লাইনে বা কমা দিয়ে আলাদা করে):')
+);
+bot.action('adm_main_link', startAdminPrompt('set_main_link', '🔗 নতুন *Main Group Link* পাঠান:'));
+bot.action('adm_main_id', startAdminPrompt('set_main_id', '🆔 নতুন *Main Group ID* পাঠান (যেমন `-1001234567890`):'));
+bot.action('adm_otp_link', startAdminPrompt('set_otp_link', '🔗 নতুন *OTP Group Link* পাঠান:'));
+bot.action('adm_otp_id', startAdminPrompt('set_otp_id', '🆔 নতুন *OTP Group ID* পাঠান (যেমন `-1001234567890`):'));
+
+bot.action(
   'cfg_socket_url',
-  startConfigPrompt(
+  startAdminPrompt(
     'set_socket_url',
     '🔌 নতুন *Socket URL* পাঠান (যেমন: `wss://www.ivasms.com/live/socket.io/`):'
   )
 );
-
 bot.action(
   'cfg_api_url',
-  startConfigPrompt(
-    'set_api_url',
-    '🌐 নতুন *API URL* পাঠান (যেমন: `https://example.com/api.php`):'
-  )
+  startAdminPrompt('set_api_url', '🌐 নতুন *API URL* পাঠান:')
 );
-
 bot.action(
   'cfg_api_key',
-  startConfigPrompt('set_api_key', '🔑 নতুন *API Key* পাঠান:')
+  startAdminPrompt('set_api_key', '🔑 নতুন *API Key* পাঠান:')
 );
-
 bot.action(
   'cfg_socket_cookie',
-  startConfigPrompt('set_socket_cookie', '🍪 নতুন *Socket Cookie* পাঠান (বা `clear` লিখুন):')
+  startAdminPrompt('set_socket_cookie', '🍪 নতুন *Socket Cookie* পাঠান (বা `clear` লিখুন):')
 );
 
 // সাপোর্ট মেসেজ
@@ -341,17 +467,27 @@ bot.hears('🆘 SUPPORT', async (ctx) => {
   await ctx.reply('🆘 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
 });
 
-// GET NUMBER
+// GET NUMBER (গ্রুপ চেক + লোকাল পুল / API)
 bot.hears('📞 GET NUMBER', async (ctx) => {
+  const isAdmin = ADMIN_IDS.includes(ctx.from.id);
+  if (!isAdmin && !(await isUserVerifiedInGroups(ctx))) {
+    return sendGroupVerifyPrompt(ctx);
+  }
   if (providerMode === 'off') {
     return ctx.reply('⚠️ বর্তমানে নম্বর সার্ভিস OFF আছে।');
   }
+
   await ctx.reply('⏳ নম্বর খোঁজা হচ্ছে...');
   try {
     let number = null;
-    if (providerMode === 'api' || providerMode === 'auto') {
+
+    if (state.numbers.length > 0) {
+      number = state.numbers.shift();
+      await dbPut('pool/numbers', state.numbers);
+    } else if (providerMode === 'api' || providerMode === 'auto') {
       number = await fetchNumberViaApi();
     }
+
     if (!number) {
       return ctx.reply('⚠️ এখন কোনো নম্বর পাওয়া যায়নি। পরে আবার চেষ্টা করুন।');
     }
@@ -387,7 +523,7 @@ bot.hears('📞 GET NUMBER', async (ctx) => {
 bot.hears('👛 WALLET', (ctx) => ctx.reply('👛 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।'));
 bot.hears('📡 TRAFFIC', (ctx) =>
   ctx.reply(
-    `📡 মোড: *${providerMode.toUpperCase()}* | Socket: ${socketConnected ? '🟢 Connected' : '🔴 Disconnected'}`,
+    `📡 মোড: *${providerMode.toUpperCase()}* | Socket: ${socketConnected ? '🟢 Connected' : '🔴 Disconnected'} | Stock: \`${state.numbers.length}\``,
     { parse_mode: 'Markdown' }
   )
 );
@@ -395,15 +531,50 @@ bot.hears('✅ WA CHECKER', (ctx) => ctx.reply('✅ WhatsApp Checker সার�
 bot.hears('🌐 LANGUAGE', (ctx) => ctx.reply('🌐 বর্তমান ভাষা: বাংলা (BN)'));
 bot.hears('📄 NUMBER FILE', (ctx) => ctx.reply('📄 Number File অপশন সক্রিয় আছে।'));
 
-// টেক্সট হ্যান্ডলার: অ্যাডমিন কনফিগ সেভ করা অথবা ইউজারের সাপোর্ট মেসেজ ফরওয়ার্ড
+// টেক্সট হ্যান্ডলার: অ্যাডমিন ইনপুট অথবা সাপোর্ট মেসেজ ফরওয়ার্ড
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const inputText = ctx.message.text.trim();
 
-  // ১. অ্যাডমিন কনফিগ ইনপুট চেক
   if (ADMIN_IDS.includes(userId) && state.adminInputStep.has(userId)) {
     const step = state.adminInputStep.get(userId);
     state.adminInputStep.delete(userId);
+
+    if (step === 'add_number') {
+      const added = await addNumbersToPool(inputText);
+      await ctx.reply(`✅ ${added}টি নতুন নম্বর যুক্ত হয়েছে। মোট নম্বর: \`${state.numbers.length}\``, {
+        parse_mode: 'Markdown'
+      });
+      return;
+    }
+
+    if (step === 'set_main_link') {
+      state.mainGroupLink = inputText;
+      await dbPut('config/mainGroupLink', inputText);
+      await ctx.reply('✅ Main Group Link সেট হয়েছে।');
+      return;
+    }
+
+    if (step === 'set_main_id') {
+      state.mainGroupId = inputText;
+      await dbPut('config/mainGroupId', inputText);
+      await ctx.reply('✅ Main Group ID সেট হয়েছে।');
+      return;
+    }
+
+    if (step === 'set_otp_link') {
+      state.otpGroupLink = inputText;
+      await dbPut('config/otpGroupLink', inputText);
+      await ctx.reply('✅ OTP Group Link সেট হয়েছে।');
+      return;
+    }
+
+    if (step === 'set_otp_id') {
+      state.otpGroupId = inputText;
+      await dbPut('config/otpGroupId', inputText);
+      await ctx.reply('✅ OTP Group ID সেট হয়েছে।');
+      return;
+    }
 
     if (step === 'set_socket_url') {
       const { origin, path } = parseSocketInput(inputText);
@@ -412,14 +583,18 @@ bot.on('text', async (ctx) => {
       await dbPut('config/socketUrl', origin);
       await dbPut('config/socketPath', path);
       initSocket();
-      await ctx.reply(`✅ Socket URL সেট হয়েছে:\n\`${origin}${path}\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`✅ Socket URL সেট হয়েছে:\n\`${origin}${path}\``, {
+        parse_mode: 'Markdown'
+      });
       return;
     }
 
     if (step === 'set_api_url') {
       state.apiUrl = inputText;
       await dbPut('config/apiUrl', inputText);
-      await ctx.reply(`✅ API URL সেট হয়েছে:\n\`${inputText}\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`✅ API URL সেট হয়েছে:\n\`${inputText}\``, {
+        parse_mode: 'Markdown'
+      });
       return;
     }
 
@@ -440,7 +615,6 @@ bot.on('text', async (ctx) => {
     }
   }
 
-  // ২. ইউজারের সাপোর্ট মেসেজ (8771921458)
   if (!state.waitingSupportFrom.has(userId)) return;
   state.waitingSupportFrom.delete(userId);
 
@@ -481,12 +655,33 @@ if (SELF_URL) {
   if (!FIREBASE_DB_URL) {
     console.log('FIREBASE_DB_URL not set. Using local memory only.');
   } else {
-    const savedMode = await dbGet('config/providerMode');
-    const savedSocketUrl = await dbGet('config/socketUrl');
-    const savedSocketPath = await dbGet('config/socketPath');
-    const savedCookie = await dbGet('config/socketCookie');
-    const savedApiUrl = await dbGet('config/apiUrl');
-    const savedApiKey = await dbGet('config/apiKey');
+    const [
+      savedMode,
+      savedSocketUrl,
+      savedSocketPath,
+      savedCookie,
+      savedApiUrl,
+      savedApiKey,
+      savedMainLink,
+      savedMainId,
+      savedOtpLink,
+      savedOtpId,
+      savedJoinCheck,
+      savedNumbers
+    ] = await Promise.all([
+      dbGet('config/providerMode'),
+      dbGet('config/socketUrl'),
+      dbGet('config/socketPath'),
+      dbGet('config/socketCookie'),
+      dbGet('config/apiUrl'),
+      dbGet('config/apiKey'),
+      dbGet('config/mainGroupLink'),
+      dbGet('config/mainGroupId'),
+      dbGet('config/otpGroupLink'),
+      dbGet('config/otpGroupId'),
+      dbGet('config/joinCheck'),
+      dbGet('pool/numbers')
+    ]);
 
     if (savedMode && ['socket', 'api', 'auto', 'off'].includes(savedMode)) {
       providerMode = savedMode;
@@ -496,6 +691,12 @@ if (SELF_URL) {
     if (savedCookie) state.socketCookie = savedCookie;
     if (savedApiUrl) state.apiUrl = savedApiUrl;
     if (savedApiKey) state.apiKey = savedApiKey;
+    if (savedMainLink) state.mainGroupLink = savedMainLink;
+    if (savedMainId) state.mainGroupId = savedMainId;
+    if (savedOtpLink) state.otpGroupLink = savedOtpLink;
+    if (savedOtpId) state.otpGroupId = savedOtpId;
+    if (typeof savedJoinCheck === 'boolean') state.joinCheck = savedJoinCheck;
+    if (Array.isArray(savedNumbers)) state.numbers = savedNumbers;
   }
 
   initSocket();
