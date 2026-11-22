@@ -10,10 +10,13 @@ const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
 const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
 
-const ENDPOINTS = {
+const PANEL_URLS = {
+  base: 'https://nxv-sms.vercel.app',
   getNumber: 'https://nxv-sms.vercel.app/get-number',
   getOtp: 'https://nxv-sms.vercel.app/get-otp',
-  activeRange: 'https://nxv-sms.vercel.app/active-rangre'
+  activeRange: 'https://nxv-sms.vercel.app/active-rangre',
+  cancelNumber: 'https://nxv-sms.vercel.app/cancel-number',
+  balance: 'https://nxv-sms.vercel.app/balance'
 };
 
 const DEFAULT_API_KEY = process.env.API_KEY || 'nxv_live_mwr98oy3_ypnnxbi7zjowac7m';
@@ -44,11 +47,11 @@ const state = {
   apiEnabled: true,
   apiKey: DEFAULT_API_KEY,
   otpGroupLink: process.env.OTP_GROUP_LINK || 'https://t.me/your_otp_group_link',
-  otpReward: 0,
+  otpReward: 0.55,
   minWithdraw: 50,
   users: [],
   balances: {},
-  otpStats: { total: 0, byCountry: {} },
+  otpStats: { total: 0, byRange: {} },
   userSession: new Map(),
   lastBotBoardMsg: new Map(),
   waitingSupportFrom: new Set(),
@@ -64,13 +67,13 @@ function isApiReady() {
   return Boolean(state.apiEnabled && getApiKey());
 }
 
-function buildUrlWithKey(baseEndpoint, extraParams = {}) {
-  const url = new URL(baseEndpoint);
-  const params = {
+function buildPanelUrl(endpointUrl, extraParams = {}) {
+  const url = new URL(endpointUrl);
+  const merged = {
     api_key: getApiKey(),
     ...extraParams
   };
-  Object.entries(params).forEach(([k, v]) => {
+  Object.entries(merged).forEach(([k, v]) => {
     if (v !== undefined && v !== null && String(v).trim() !== '') {
       url.searchParams.set(k, String(v).trim());
     }
@@ -78,8 +81,8 @@ function buildUrlWithKey(baseEndpoint, extraParams = {}) {
   return url.toString();
 }
 
-async function callEndpoint(baseEndpoint, extraParams = {}, timeout = 10000) {
-  const fullUrl = buildUrlWithKey(baseEndpoint, extraParams);
+async function callPanel(endpointUrl, extraParams = {}, timeout = 10000) {
+  const fullUrl = buildPanelUrl(endpointUrl, extraParams);
   return axios.get(fullUrl, {
     timeout,
     headers: {
@@ -88,42 +91,25 @@ async function callEndpoint(baseEndpoint, extraParams = {}, timeout = 10000) {
   });
 }
 
-function resolveCountry(rawCountryOrPhone) {
-  const str = String(rawCountryOrPhone || '').trim();
-  const lower = str.toLowerCase();
-
-  const byName = COUNTRY_META.find(
-    (c) => lower.includes(c.name.toLowerCase()) || lower === c.iso.toLowerCase()
-  );
-  if (byName) {
-    return {
-      key: byName.name.toLowerCase(),
-      name: byName.name,
-      label: `${byName.flag} ${byName.name} (${byName.iso})`,
-      flag: byName.flag,
-      dial: byName.dial
-    };
-  }
-
-  const digits = str.replace(/[^\d]/g, '');
-  const sortedByDial = [...COUNTRY_META].sort((a, b) => b.dial.length - a.dial.length);
-  for (const c of sortedByDial) {
+function resolveRangeLabel(phoneOrRange) {
+  const rawStr = String(phoneOrRange || '').trim();
+  const digits = rawStr.replace(/[^\d]/g, '');
+  const sorted = [...COUNTRY_META].sort((a, b) => b.dial.length - a.dial.length);
+  for (const c of sorted) {
     if (digits.startsWith(c.dial)) {
       return {
-        key: c.name.toLowerCase(),
-        name: c.name,
+        key: `dial_${c.dial}`,
         label: `${c.flag} ${c.name} (${c.iso})`,
         flag: c.flag,
         dial: c.dial
       };
     }
   }
-
+  const prefix = digits.slice(0, 3) || rawStr || 'Range';
   return {
-    key: lower || 'unknown',
-    name: str || 'Unknown',
-    label: `🌍 ${str || 'Unknown'}`,
-    flag: '🌍',
+    key: `rng_${prefix}`,
+    label: `🌐 Range ${rawStr || prefix}`,
+    flag: '🌐',
     dial: ''
   };
 }
@@ -228,7 +214,7 @@ function getMainKeyboard(isAdmin) {
   const rows = [
     [{ text: '🟢 GET NUMBER' }],
     [{ text: '🟣 WALLET' }, { text: '🔵 TRAFFIC' }],
-    [{ text: '🩷 SUPPORT' }]
+    [{ text: '🩷 SUPPORT' }, { text: '🟡 NUMBER FILE' }]
   ];
   if (isAdmin) rows.push([{ text: '💠 ADMIN PANEL' }]);
   return { keyboard: rows, resize_keyboard: true };
@@ -239,58 +225,68 @@ async function fetchActiveRanges() {
   if (state.cachedRanges && Date.now() - state.cachedRanges.ts < 30000) {
     return state.cachedRanges.items;
   }
-
   try {
-    const res = await callEndpoint(ENDPOINTS.activeRange, {}, 8000);
+    const res = await callPanel(PANEL_URLS.activeRange, {}, 8000);
     console.log('[ACTIVE-RANGE RESP]:', JSON.stringify(res.data));
-    const list = Array.isArray(res.data)
-      ? res.data
-      : Array.isArray(res.data?.ranges)
-        ? res.data.ranges
-        : Array.isArray(res.data?.data)
-          ? res.data.data
+    const list = Array.isArray(res.data?.data?.active_ranges)
+      ? res.data.data.active_ranges
+      : Array.isArray(res.data?.active_ranges)
+        ? res.data.active_ranges
+        : Array.isArray(res.data)
+          ? res.data
           : [];
-    if (list.length) {
-      state.cachedRanges = { items: list, ts: Date.now() };
-      return list;
-    }
+    state.cachedRanges = { items: list, ts: Date.now() };
+    return list;
   } catch (err) {
     console.error('[ACTIVE-RANGE ERR]:', err.response?.data || err.message);
+    return [];
   }
-  return [];
 }
 
-async function requestNumberFromPanel(service = 'Telegram', country = '') {
+async function fetchPanelBalance() {
   if (!isApiReady()) return null;
-  const params = {
-    service: service || 'Telegram'
-  };
-  if (country && country !== 'auto') {
-    params.country = country;
+  try {
+    const res = await callPanel(PANEL_URLS.balance, {}, 8000);
+    console.log('[BALANCE RESP]:', JSON.stringify(res.data));
+    return res.data || null;
+  } catch (err) {
+    console.error('[BALANCE ERR]:', err.response?.data || err.message);
+    return null;
+  }
+}
+
+async function requestNumberFromPanel(service = 'Telegram', range = '') {
+  if (!isApiReady()) return { error: 'API বন্ধ বা API Key নেই।' };
+  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
+  const params = { service: cleanService };
+  if (range && range !== 'auto') {
+    params.range = range;
   }
 
-  const res = await callEndpoint(ENDPOINTS.getNumber, params, 10000);
+  const res = await callPanel(PANEL_URLS.getNumber, params, 10000);
   console.log('[GET-NUMBER RESP]:', JSON.stringify(res.data));
 
-  const data = res.data || {};
-  if (data.success === false) return null;
+  const d = res.data || {};
+  if (d.success === false) {
+    return { error: d.error || d.message || 'প্যানেল নম্বর দেয়নি।' };
+  }
 
   const phone = normalizePhone(
-    data.phoneNumber || data.number || data.phone || data.data?.phoneNumber || data.data?.number || ''
+    d.phoneNumber || d.number || d.phone || d.data?.phoneNumber || d.data?.number || ''
   );
-  if (!phone) return null;
+  if (!phone) {
+    return { error: d.message || 'প্যানেল থেকে বৈধ নম্বর পাওয়া যায়নি।' };
+  }
 
-  const countryInfo = data.country
-    ? resolveCountry(data.country)
-    : resolveCountry(phone);
-
+  const info = resolveRangeLabel(range && range !== 'auto' ? range : phone);
   return {
+    service: cleanService,
+    range: range && range !== 'auto' ? range : info.key,
     phone,
-    orderId: data.orderId || data.order_id || data.data?.orderId || data.data?.order_id || null,
-    countryKey: countryInfo.key,
-    countryLabel: countryInfo.label,
-    flag: countryInfo.flag,
-    dial: countryInfo.dial
+    orderId: d.orderId || d.order_id || d.data?.orderId || d.data?.order_id || null,
+    rangeLabel: info.label,
+    flag: info.flag,
+    dial: info.dial
   };
 }
 
@@ -300,7 +296,7 @@ async function requestOtpFromPanel(orderId, phone) {
   if (orderId) params.orderId = orderId;
   if (phone) params.phoneNumber = phone;
 
-  const res = await callEndpoint(ENDPOINTS.getOtp, params, 10000);
+  const res = await callPanel(PANEL_URLS.getOtp, params, 10000);
   console.log('[GET-OTP RESP]:', JSON.stringify(res.data));
 
   const d = res.data || {};
@@ -314,16 +310,28 @@ async function requestOtpFromPanel(orderId, phone) {
   return null;
 }
 
+async function cancelNumberOnPanel(orderId, phone) {
+  if (!isApiReady() || (!orderId && !phone)) return null;
+  const params = {};
+  if (orderId) params.orderId = orderId;
+  if (phone) params.phoneNumber = phone;
+
+  const res = await callPanel(PANEL_URLS.cancelNumber, params, 10000);
+  console.log('[CANCEL-NUMBER RESP]:', JSON.stringify(res.data));
+  return res.data;
+}
+
 async function recordTraffic(phone) {
-  const c = resolveCountry(phone);
-  const cur = state.otpStats.byCountry[c.key] || { label: c.label, count: 0 };
+  const info = resolveRangeLabel(phone);
+  const cur = state.otpStats.byRange[info.key] || { label: info.label, count: 0 };
   cur.count = Number(cur.count || 0) + 1;
-  state.otpStats.byCountry[c.key] = cur;
+  state.otpStats.byRange[info.key] = cur;
   state.otpStats.total = Number(state.otpStats.total || 0) + 1;
   await dbPut('stats/otps', state.otpStats);
 }
 
 function buildNumberCard(item, stripCC = false, otp = null) {
+  const serviceName = item.service || 'Telegram';
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
   const shownPhone =
     stripCC && item.dial && digits.startsWith(item.dial)
@@ -331,8 +339,8 @@ function buildNumberCard(item, stripCC = false, otp = null) {
       : `+${digits}`;
 
   const text =
-    `${item.flag} *${item.service} Number Assigned:*\n` +
-    `🌍 Country: *${item.countryLabel}*\n` +
+    `${item.flag} *${serviceName} Number Assigned:*\n` +
+    `📡 Range: *${item.rangeLabel}*\n` +
     (otp ? `✅ *OTP Received:* \`${otp}\`` : `⏳ *Waiting for OTP....*`);
 
   const rows = [
@@ -346,8 +354,14 @@ function buildNumberCard(item, stripCC = false, otp = null) {
     [
       {
         text: '🔄 Change Number',
-        callback_data: `chg_num_${encodeURIComponent(item.service)}__${encodeURIComponent(item.countryKey || 'auto')}`
+        callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`
       },
+      {
+        text: '🚫 Cancel Number',
+        callback_data: 'cancel_num'
+      }
+    ],
+    [
       {
         text: stripCC ? '🟢 Restore CC' : '🔴 Remove CC',
         callback_data: 'toggle_cc'
@@ -384,7 +398,7 @@ setInterval(async () => {
         await rawSendMessage(
           uid,
           `✅ *OTP Received!*\n\n` +
-            `📱 Service: *${sess.item.service}*\n` +
+            `📱 Service: *${sess.item.service || 'Telegram'}*\n` +
             `📞 Number: \`${sess.item.phone}\`\n` +
             `🔑 OTP: \`${otp}\`${rewardMsg}`
         );
@@ -404,25 +418,24 @@ bot.start(async (ctx) => {
 bot.hears('🟢 GET NUMBER', async (ctx) => {
   await registerUser(ctx.from.id);
   const ranges = await fetchActiveRanges();
-  const services = [
+  const servicesFromApi = [
     ...new Set(
       ranges
-        .map((r) => (typeof r === 'object' ? r.service || r.service_name : ''))
+        .map((r) => String(r?.service || '').trim())
         .filter(Boolean)
     )
   ];
-  const serviceList = services.length ? services : ['Telegram', 'WhatsApp'];
+  const serviceList = servicesFromApi.length
+    ? servicesFromApi
+    : ['Facebook', 'Instagram', 'WhatsApp', 'Telegram'];
 
   const rows = [];
   for (let i = 0; i < serviceList.length; i += 2) {
-    const row = [
-      { text: `🟢 ${serviceList[i].toUpperCase()}`, callback_data: `pick_srv_${encodeURIComponent(serviceList[i])}` }
-    ];
+    const s1 = serviceList[i];
+    const row = [{ text: `🟢 ${s1}`, callback_data: `pick_srv_${encodeURIComponent(s1)}` }];
     if (serviceList[i + 1]) {
-      row.push({
-        text: `🔵 ${serviceList[i + 1].toUpperCase()}`,
-        callback_data: `pick_srv_${encodeURIComponent(serviceList[i + 1])}`
-      });
+      const s2 = serviceList[i + 1];
+      row.push({ text: `🔵 ${s2}`, callback_data: `pick_srv_${encodeURIComponent(s2)}` });
     }
     rows.push(row);
   }
@@ -431,70 +444,83 @@ bot.hears('🟢 GET NUMBER', async (ctx) => {
 });
 
 bot.action(/^pick_srv_(.+)$/, async (ctx) => {
-  const service = decodeURIComponent(ctx.match[1]);
+  const service = decodeURIComponent(ctx.match[1] || 'Telegram');
   await ctx.answerCbQuery();
 
   const ranges = await fetchActiveRanges();
-  const countries = [
-    ...new Set(
-      ranges
-        .filter((r) => {
-          const srv = typeof r === 'object' ? (r.service || r.service_name || '') : '';
-          return !srv || srv.toLowerCase() === service.toLowerCase();
-        })
-        .map((r) => (typeof r === 'string' ? r : r.country || r.country_name || r.name || ''))
-        .filter(Boolean)
-    )
-  ];
+  const matchedRanges = ranges
+    .filter((r) => String(r?.service || '').toLowerCase() === service.toLowerCase())
+    .map((r) => String(r?.range || '').trim())
+    .filter(Boolean);
+
+  const uniqueRanges = [...new Set(matchedRanges)].slice(0, 12);
 
   const rows = [
     [{ text: '🌍 Auto Range', callback_data: `get_num_${encodeURIComponent(service)}__auto` }]
   ];
 
-  for (let i = 0; i < countries.length; i += 2) {
-    const c1 = resolveCountry(countries[i]);
-    const row = [
-      { text: c1.label, callback_data: `get_num_${encodeURIComponent(service)}__${encodeURIComponent(c1.name)}` }
-    ];
-    if (countries[i + 1]) {
-      const c2 = resolveCountry(countries[i + 1]);
-      row.push({
-        text: c2.label,
-        callback_data: `get_num_${encodeURIComponent(service)}__${encodeURIComponent(c2.name)}`
-      });
+  for (let i = 0; i < uniqueRanges.length; i += 2) {
+    const r1 = uniqueRanges[i];
+    const row = [{ text: `📡 ${r1}`, callback_data: `get_num_${encodeURIComponent(service)}__${encodeURIComponent(r1)}` }];
+    if (uniqueRanges[i + 1]) {
+      const r2 = uniqueRanges[i + 1];
+      row.push({ text: `📡 ${r2}`, callback_data: `get_num_${encodeURIComponent(service)}__${encodeURIComponent(r2)}` });
     }
     rows.push(row);
   }
 
-  await sendCleanBoard(ctx, `📱 *${service} — Select Country / Range:*`, { inline_keyboard: rows }, true);
+  await sendCleanBoard(ctx, `📱 *${service} — Select Active Range:*`, { inline_keyboard: rows }, true);
 });
 
-async function handleNumberRequest(ctx, service, country) {
+async function handleNumberReq(ctx, service, range) {
+  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
+  const cleanRange = String(range || 'auto').trim() || 'auto';
   await ctx.answerCbQuery('নম্বর নেওয়া হচ্ছে...');
+
   try {
-    const item = await requestNumberFromPanel(service, country);
-    if (!item) {
-      return sendCleanBoard(ctx, `⚠️ *${service}* এর জন্য নম্বর পাওয়া যায়নি।`, null, true);
+    const res = await requestNumberFromPanel(cleanService, cleanRange);
+    if (!res || res.error) {
+      return sendCleanBoard(
+        ctx,
+        `⚠️ *${cleanService}* এর জন্য নম্বর পাওয়া যায়নি।\n${res?.error ? `কারণ: \`${res.error}\`` : ''}`,
+        null,
+        true
+      );
     }
     state.userSession.set(ctx.from.id, {
-      item,
+      item: res,
       stripCC: false,
       otpDelivered: false
     });
-    const card = buildNumberCard(item, false, null);
+    const card = buildNumberCard(res, false, null);
     await sendCleanBoard(ctx, card.text, card.reply_markup, true);
   } catch (err) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
-    await sendCleanBoard(ctx, '❌ নম্বর আনতে সমস্যা হয়েছে।', null, true);
+    await sendCleanBoard(ctx, '❌ প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে।', null, true);
   }
 }
 
 bot.action(/^get_num_(.+)__(.+)$/, async (ctx) => {
-  await handleNumberRequest(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
+  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
 });
 
 bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
-  await handleNumberRequest(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
+  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
+});
+
+bot.action('cancel_num', async (ctx) => {
+  const sess = state.userSession.get(ctx.from.id);
+  if (!sess?.item) {
+    return ctx.answerCbQuery('কোনো সক্রিয় নম্বর নেই।', { show_alert: true });
+  }
+  await ctx.answerCbQuery('বাতিল করা হচ্ছে...');
+  try {
+    await cancelNumberOnPanel(sess.item.orderId, sess.item.phone);
+  } catch (err) {
+    console.error('[CANCEL ERR]:', err.response?.data || err.message);
+  }
+  state.userSession.delete(ctx.from.id);
+  await sendCleanBoard(ctx, `🚫 নম্বর \`${sess.item.phone}\` বাতিল করা হয়েছে।`, null, true);
 });
 
 bot.action('toggle_cc', async (ctx) => {
@@ -521,7 +547,7 @@ bot.hears('🟣 WALLET', async (ctx) => {
 bot.hears('🔵 TRAFFIC', async (ctx) => {
   await registerUser(ctx.from.id);
   const total = Number(state.otpStats.total || 0);
-  const list = Object.values(state.otpStats.byCountry || {});
+  const list = Object.values(state.otpStats.byRange || {});
   if (!total || !list.length) {
     return sendCleanBoard(ctx, '📡 *TRAFFIC REPORT*\n\nএখনো কোনো OTP আসেনি।');
   }
@@ -532,6 +558,17 @@ bot.hears('🔵 TRAFFIC', async (ctx) => {
   await sendCleanBoard(ctx, `📡 *TRAFFIC REPORT*\n\nTotal: *${total}*\n\n${lines.join('\n')}`);
 });
 
+bot.hears('🟡 NUMBER FILE', async (ctx) => {
+  await registerUser(ctx.from.id);
+  const sess = state.userSession.get(ctx.from.id);
+  await sendCleanBoard(
+    ctx,
+    sess?.item
+      ? `🟡 *Active Number*\n\n• Service: *${sess.item.service}*\n• Number: \`${sess.item.phone}\`\n• Order ID: \`${sess.item.orderId || 'N/A'}\``
+      : '🟡 কোনো সক্রিয় নম্বর নেই।'
+  );
+});
+
 bot.hears('🩷 SUPPORT', async (ctx) => {
   await registerUser(ctx.from.id);
   state.waitingSupportFrom.add(ctx.from.id);
@@ -540,6 +577,9 @@ bot.hears('🩷 SUPPORT', async (ctx) => {
 
 bot.hears('💠 ADMIN PANEL', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  const panelBal = await fetchPanelBalance();
+  const balText = panelBal?.balance !== undefined ? `৳${panelBal.balance}` : 'N/A';
+
   const markup = {
     inline_keyboard: [
       [
@@ -551,7 +591,7 @@ bot.hears('💠 ADMIN PANEL', async (ctx) => {
   };
   await sendCleanBoard(
     ctx,
-    `💠 *ADMIN PANEL*\n\n• Users: \`${state.users.length}\`\n• API Status: *${state.apiEnabled ? '🟢 ON' : '🔴 OFF'}*`,
+    `💠 *ADMIN PANEL*\n\n• Users: \`${state.users.length}\`\n• Panel Balance: *${balText}*\n• API Status: *${state.apiEnabled ? '🟢 ON' : '🔴 OFF'}*`,
     markup
   );
 });
@@ -640,13 +680,13 @@ if (SELF_URL) {
     if (Array.isArray(u)) state.users = u;
     if (b && typeof b === 'object') state.balances = b;
     if (st && typeof st === 'object') {
-      state.otpStats = { total: Number(st.total || 0), byCountry: st.byCountry || {} };
+      state.otpStats = { total: Number(st.total || 0), byRange: st.byRange || st.byCountry || {} };
     }
     if (key) state.apiKey = key;
     if (typeof en === 'boolean') state.apiEnabled = en;
   }
   await bot.launch();
-  console.log('Bot running with exact NXV endpoints...');
+  console.log('Bot running with NXV panel endpoints & active_ranges...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
