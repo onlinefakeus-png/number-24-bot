@@ -1739,11 +1739,15 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     otpDelivered: anyOtpFound
   });
 
+  const activeNumbersLine = picked
+    .map((item) => `📞 \`${formatDisplayPhone(item.phone, stripCC, item.dial)}\``)
+    .join('\n');
+
   const statusLine = anyOtpFound
     ? `✅ *${service} OTP Received:*\n${otpLines.join('\n')}`
     : `⏳ *Waiting for OTP....*`;
 
-  const text = `${flag} *${service} Number Assigned:*\n${statusLine}`;
+  const text = `${flag} *${service} Number Assigned:*\n${activeNumbersLine}\n${statusLine}`;
 
   const keyboardRows = [];
   picked.forEach((item) => {
@@ -1830,8 +1834,9 @@ bot.action(/^pick_cnt_(.+)__(.+)$/, async (ctx) => {
 
 bot.action(/^copy_num_(.+)$/, async (ctx) => {
   const phone = decodeURIComponent(ctx.match[1]);
-  await ctx.answerCbQuery('নম্বর কপি করার জন্য নিচে দেখুন');
-  await rawSendMessage(ctx.chat.id, `\`${phone}\``);
+  await ctx.answerCbQuery(`নম্বর: ${phone} (উপরের কোড নম্বরে ট্যাপ করে কপি করুন)`, {
+    show_alert: false
+  });
 });
 
 bot.action('toggle_remove_cc', async (ctx) => {
