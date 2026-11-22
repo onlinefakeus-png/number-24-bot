@@ -69,11 +69,10 @@ function resolveCountryInfo(rawCountry) {
   const matched = COUNTRY_META.find((c) => c.keys.some((k) => lower.includes(k)));
 
   if (matched) {
-    const label = `${matched.flag} ${matched.name} (${matched.iso})`;
     return {
       key: matched.name.toLowerCase(),
       name: matched.name,
-      label,
+      label: `${matched.flag} ${matched.name} (${matched.iso})`,
       flag: matched.flag,
       dial: matched.dial,
       iso: matched.iso
@@ -83,14 +82,12 @@ function resolveCountryInfo(rawCountry) {
   const fallbackFlag = extractedFlag || '🌍';
   const isoMatch = raw.match(/\(([A-Za-z]{2,3})\)/);
   const displayName = cleanedName || raw || 'Unknown';
-  const label = isoMatch
-    ? `${fallbackFlag} ${displayName} (${isoMatch[1].toUpperCase()})`
-    : `${fallbackFlag} ${displayName}`;
-
   return {
     key: displayName.toLowerCase(),
     name: displayName,
-    label,
+    label: isoMatch
+      ? `${fallbackFlag} ${displayName} (${isoMatch[1].toUpperCase()})`
+      : `${fallbackFlag} ${displayName}`,
     flag: fallbackFlag,
     dial: '',
     iso: isoMatch ? isoMatch[1].toUpperCase() : ''
@@ -102,9 +99,7 @@ function attachCountryCode(rawNumber, dialCode = '') {
   if (!digits || digits.length < 6 || digits.length > 15) return null;
 
   if (dialCode) {
-    if (digits.startsWith(dialCode)) {
-      return `+${digits}`;
-    }
+    if (digits.startsWith(dialCode)) return `+${digits}`;
     const withoutLeadingZero = digits.replace(/^0+/, '');
     return `+${dialCode}${withoutLeadingZero}`;
   }
@@ -114,6 +109,10 @@ function attachCountryCode(rawNumber, dialCode = '') {
 const state = {
   apiUrlEnabled: false,
   apiKeyEnabled: false,
+  autoRangeEnabled: true,
+  batchSize: 1,
+  otpReward: 0.5,
+  minWithdraw: 50,
   apiUrl: process.env.API_URL || DEFAULT_NXV_BASE,
   apiKey: DEFAULT_API_KEY,
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/your_main_group_link',
@@ -123,15 +122,14 @@ const state = {
   joinCheck: true,
   numberEntries: [],
   users: [],
+  balances: {},
   otpsByPhone: {},
-  otpStats: {
-    total: 0,
-    byCountry: {}
-  },
+  otpStats: { total: 0, byCountry: {} },
   userSession: new Map(),
   lastBotBoardMsg: new Map(),
   lastGetNumberUserMsg: new Map(),
   waitingSupportFrom: new Set(),
+  waitingSearchRangeFrom: new Set(),
   adminWizard: new Map(),
   cachedApiServices: null,
   cachedApiRanges: null
@@ -166,16 +164,11 @@ function inlineUrlButton(text, url, style = null) {
 }
 
 function buildReplyMarkup(rows) {
-  return {
-    keyboard: rows,
-    resize_keyboard: true
-  };
+  return { keyboard: rows, resize_keyboard: true };
 }
 
 function buildInlineMarkup(rows) {
-  return {
-    inline_keyboard: rows
-  };
+  return { inline_keyboard: rows };
 }
 
 async function rawSendMessage(chatId, text, options = {}) {
@@ -184,9 +177,7 @@ async function rawSendMessage(chatId, text, options = {}) {
     text,
     parse_mode: options.parse_mode || 'Markdown'
   };
-  if (options.reply_markup) {
-    payload.reply_markup = options.reply_markup;
-  }
+  if (options.reply_markup) payload.reply_markup = options.reply_markup;
   return bot.telegram.callApi('sendMessage', payload);
 }
 
@@ -197,9 +188,7 @@ async function rawEditMessageText(chatId, messageId, text, options = {}) {
     text,
     parse_mode: options.parse_mode || 'Markdown'
   };
-  if (options.reply_markup) {
-    payload.reply_markup = options.reply_markup;
-  }
+  if (options.reply_markup) payload.reply_markup = options.reply_markup;
   return bot.telegram.callApi('editMessageText', payload);
 }
 
@@ -294,12 +283,30 @@ async function persistOtpStats() {
   await dbPut('stats/otps', state.otpStats);
 }
 
+async function getUserBalance(userId) {
+  const key = String(userId);
+  return Number(state.balances[key] || 0);
+}
+
+async function addUserBalance(userId, delta) {
+  const key = String(userId);
+  const current = Number(state.balances[key] || 0);
+  const next = Number((current + Number(delta || 0)).toFixed(2));
+  state.balances[key] = next;
+  await dbPut(`balances/${encodeURIComponent(key)}`, next);
+  return next;
+}
+
 async function registerUser(userId) {
   if (!userId) return;
   const idStr = String(userId);
   if (!state.users.includes(idStr)) {
     state.users.push(idStr);
     await dbPut('users/list', state.users);
+  }
+  if (state.balances[idStr] === undefined) {
+    state.balances[idStr] = 0;
+    await dbPut(`balances/${encodeURIComponent(idStr)}`, 0);
   }
 }
 
@@ -312,6 +319,10 @@ async function turnAllOff() {
   ]);
 }
 
+function isApiReady() {
+  return Boolean(state.apiUrlEnabled && state.apiUrl);
+}
+
 function getActiveSummaryLabel() {
   const active = [];
   if (state.apiUrlEnabled) active.push('API URL');
@@ -322,9 +333,7 @@ function getActiveSummaryLabel() {
 function getNormalizedBaseUrl() {
   let raw = String(state.apiUrl || DEFAULT_NXV_BASE).trim();
   if (!raw) raw = DEFAULT_NXV_BASE;
-  if (!/^https?:\/\//i.test(raw)) {
-    raw = `https://${raw}`;
-  }
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
   raw = raw.replace(/\/+$/, '');
   raw = raw.replace(/\/(get-number|get-otp|get-services|services|active-rangre|active-range|ranges|get-countries|cancel-number|balance)$/i, '');
   return raw;
@@ -426,8 +435,7 @@ async function fetchPanelServices() {
     return state.cachedApiServices.list;
   }
 
-  const candidatePaths = ['/get-services', '/services'];
-  for (const path of candidatePaths) {
+  for (const path of ['/get-services', '/services']) {
     try {
       const res = await apiGet(path, {}, 6000);
       const parsed = parseServicesFromResponse(res.data);
@@ -507,19 +515,15 @@ function parseRangeEntriesFromPayload(data, defaultService = 'General') {
         c.forEach(pushRange);
       } else if (c && typeof c === 'object') {
         Object.entries(c).forEach(([k, v]) => {
-          if (typeof v === 'object') {
-            pushRange(v);
-          } else if (isNaN(Number(k))) {
-            pushRange({ country: k, count: Number(v) || 1 });
-          } else {
-            pushRange(v);
-          }
+          if (typeof v === 'object') pushRange(v);
+          else if (isNaN(Number(k))) pushRange({ country: k, count: Number(v) || 1 });
+          else pushRange(v);
         });
       }
     }
   }
 
-  return results;
+  return results.sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
 }
 
 async function fetchPanelRangeEntries(service = '') {
@@ -533,8 +537,7 @@ async function fetchPanelRangeEntries(service = '') {
     return state.cachedApiRanges.list;
   }
 
-  const candidatePaths = ['/active-rangre', '/active-range', '/ranges', '/get-countries'];
-  for (const path of candidatePaths) {
+  for (const path of ['/active-rangre', '/active-range', '/ranges', '/get-countries']) {
     try {
       const res = await apiGet(path, service ? { service } : {}, 6000);
       const parsed = parseRangeEntriesFromPayload(res.data, service || 'General');
@@ -603,10 +606,10 @@ function extractNumberFromPayload(d) {
     d.result?.number,
     d.result?.phone,
     Array.isArray(d.data)
-      ? (d.data[0]?.phoneNumber || d.data[0]?.number || d.data[0]?.phone || null)
+      ? d.data[0]?.phoneNumber || d.data[0]?.number || d.data[0]?.phone || null
       : null,
     Array.isArray(d.numbers)
-      ? (d.numbers[0]?.phoneNumber || d.numbers[0]?.number || d.numbers[0]?.phone || null)
+      ? d.numbers[0]?.phoneNumber || d.numbers[0]?.number || d.numbers[0]?.phone || null
       : null
   ];
 
@@ -649,10 +652,6 @@ function extractCountryFromPayload(d) {
   return val ? String(val).trim() : null;
 }
 
-function isApiReady() {
-  return Boolean(state.apiUrlEnabled && state.apiUrl);
-}
-
 async function fetchOtpViaApi(phone, orderId = '') {
   if (!isApiReady() || (!phone && !orderId)) return null;
   const res = await apiGet('/get-otp', {
@@ -689,22 +688,16 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   const digits = rawNum.replace(/[^\d]/g, '');
   if (digits.length < 6 || digits.length > 15) return null;
 
-  const formattedPhone = `+${digits}`;
-  const orderId = extractOrderIdFromPayload(data);
-  const apiCountry = extractCountryFromPayload(data);
-
   return {
-    phone: formattedPhone,
-    orderId,
-    apiCountry,
+    phone: `+${digits}`,
+    orderId: extractOrderIdFromPayload(data),
+    apiCountry: extractCountryFromPayload(data),
     raw: data
   };
 }
 
 async function cancelNumberViaApi(phone = '', orderId = '') {
-  if (!isApiReady()) {
-    return { ok: false, message: 'API সক্রিয় নেই।' };
-  }
+  if (!isApiReady()) return { ok: false, message: 'API সক্রিয় নেই।' };
   const res = await apiGet('/cancel-number', {
     orderId,
     order_id: orderId,
@@ -717,9 +710,7 @@ async function cancelNumberViaApi(phone = '', orderId = '') {
 }
 
 async function fetchBalanceViaApi() {
-  if (!isApiReady()) {
-    return { ok: false, error: 'API URL বা API KEY সক্রিয় নেই।' };
-  }
+  if (!isApiReady()) return { ok: false, error: 'API URL বা API KEY সক্রিয় নেই।' };
   const res = await apiGet('/balance', {}, 10000);
   console.log('[NXV BALANCE RESP]:', JSON.stringify(res.data));
   return { ok: true, data: res.data };
@@ -771,11 +762,7 @@ function detectCountryForPhone(phone) {
     }
   }
 
-  return {
-    key: 'unknown',
-    label: '🌍 Unknown Country',
-    dial: ''
-  };
+  return { key: 'unknown', label: '🌍 Unknown Country', dial: '' };
 }
 
 async function recordCountryOtpTraffic(phone) {
@@ -818,7 +805,8 @@ function buildTrafficReportText() {
   const lines = entries.map((item) => {
     const cCount = Number(item.count) || 0;
     const percent = ((cCount / totalCodes) * 100).toFixed(1);
-    return `• ${item.label}: *${cCount}/${totalCodes}* (*${percent}%*)`;
+    const loadLevel = percent >= 40 ? '🔥 High' : percent >= 15 ? '⚡ Medium' : '🌿 Low';
+    return `• ${item.label} (${loadLevel}): *${cCount}/${totalCodes}* (*${percent}%*)`;
   });
 
   return (
@@ -831,16 +819,32 @@ function buildTrafficReportText() {
 
 function formatDisplayPhone(rawPhone, stripCC = false, dialCode = '') {
   const digits = String(rawPhone || '').replace(/[^\d]/g, '');
-  if (!stripCC) {
-    return digits ? `+${digits}` : String(rawPhone || '');
-  }
+  if (!stripCC) return digits ? `+${digits}` : String(rawPhone || '');
   if (dialCode && digits.startsWith(dialCode) && digits.length > dialCode.length + 3) {
     return digits.slice(dialCode.length);
   }
-  if (digits.length > 9) {
-    return digits.slice(2);
-  }
+  if (digits.length > 9) return digits.slice(2);
   return digits;
+}
+
+async function deliverOtpToWaitingUser(uid, sess, item, otp) {
+  sess.otpDelivered = true;
+  state.userSession.set(uid, sess);
+  let rewardLine = '';
+  if (Number(state.otpReward) > 0) {
+    const newBal = await addUserBalance(uid, state.otpReward);
+    rewardLine = `\n💰 রিওয়ার্ড যুক্ত হয়েছে: +${state.otpReward} (বর্তমান ব্যালেন্স: \`${newBal}\`)`;
+  }
+  try {
+    await rawSendMessage(
+      uid,
+      `✅ *OTP রিসিভ হয়েছে!*\n\n` +
+        `📱 সার্ভিস: *${item.service}*\n` +
+        `${item.flag || '🌍'} দেশ: *${item.countryLabel || item.countryKey}*\n` +
+        `📞 নম্বর: \`${item.phone}\`\n` +
+        `🔑 OTP কোড: \`${otp}\`${rewardLine}`
+    );
+  } catch (_) {}
 }
 
 async function notifyUserOtpIfWaiting(phone, otp) {
@@ -851,18 +855,7 @@ async function notifyUserOtpIfWaiting(phone, otp) {
       (item) => normalizePhoneKey(item.phone) === cleanKey
     );
     if (matched) {
-      sess.otpDelivered = true;
-      state.userSession.set(uid, sess);
-      try {
-        await rawSendMessage(
-          uid,
-          `✅ *OTP রিসিভ হয়েছে!*\n\n` +
-            `📱 সার্ভিস: *${matched.service}*\n` +
-            `${matched.flag || '🌍'} দেশ: *${matched.countryLabel || matched.countryKey}*\n` +
-            `📞 নম্বর: \`${matched.phone}\`\n` +
-            `🔑 OTP কোড: \`${otp}\``
-        );
-      } catch (_) {}
+      await deliverOtpToWaitingUser(uid, sess, matched, otp);
     }
   }
 }
@@ -888,9 +881,7 @@ async function saveOtp(phone, otp) {
 
 async function getSavedOtp(phone) {
   const key = normalizePhoneKey(phone) || String(phone).trim();
-  if (state.otpsByPhone[key]?.otp) {
-    return state.otpsByPhone[key].otp;
-  }
+  if (state.otpsByPhone[key]?.otp) return state.otpsByPhone[key].otp;
   const remote = await dbGet(`otps/${encodeURIComponent(key)}`);
   if (remote?.otp) {
     state.otpsByPhone[key] = remote;
@@ -904,9 +895,7 @@ function extractFormattedPhones(rawText, dialCode = '') {
   const result = [];
   for (const tok of tokens) {
     const formatted = attachCountryCode(tok, dialCode);
-    if (formatted) {
-      result.push(formatted);
-    }
+    if (formatted) result.push(formatted);
   }
   return [...new Set(result)];
 }
@@ -977,7 +966,7 @@ async function finalizeAddedNumbers(ctx, service, rawCountry, rawNumbers, source
 
   await rawSendMessage(
     ctx.chat.id,
-    `আসসালামু আলাইকুম স্যার, নাম্বার যুক্ত করা সম্পুর্ন হয়েছে স্যার\n\n` +
+    `✅ *নম্বর যুক্ত করা সম্পন্ন হয়েছে!*\n\n` +
       `📱 সার্ভিস: *${service}*\n` +
       `🌍 দেশ: *${countryInfo.label}*\n` +
       `➕ নতুন যুক্ত হয়েছে: *${addedCount}*টি\n` +
@@ -997,12 +986,8 @@ async function isUserVerifiedInGroups(ctx) {
   for (const chatId of checks) {
     try {
       const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
-      if (!member || ['left', 'kicked'].includes(member.status)) {
-        return false;
-      }
-      if (member.status === 'restricted' && member.is_member === false) {
-        return false;
-      }
+      if (!member || ['left', 'kicked'].includes(member.status)) return false;
+      if (member.status === 'restricted' && member.is_member === false) return false;
     } catch (_) {
       return false;
     }
@@ -1029,11 +1014,10 @@ async function sendGroupVerifyPrompt(ctx) {
 
 function getMainReplyKeyboard(isAdmin) {
   const rows = [
-    [kbButton('🟢 GET NUMBER', 'success')],
+    [kbButton('🟢 GET NUMBER', 'success'), kbButton('🔍 SEARCH NUMBER', 'primary')],
     [kbButton('🟣 WALLET'), kbButton('🔵 TRAFFIC', 'primary')],
-    [kbButton('🩵 WA CHECKER', 'primary')],
-    [kbButton('🟠 LANGUAGE'), kbButton('🩷 SUPPORT')],
-    [kbButton('🟡 NUMBER FILE', 'danger')]
+    [kbButton('🩵 WA CHECKER', 'primary'), kbButton('🩷 SUPPORT')],
+    [kbButton('🟠 LANGUAGE'), kbButton('🟡 NUMBER FILE', 'danger')]
   ];
   if (isAdmin) rows.push([kbButton('💠 ADMIN PANEL', 'danger')]);
   return buildReplyMarkup(rows);
@@ -1051,10 +1035,10 @@ function getMainAdminPayload() {
     `• *Saved Numbers:* \`${state.numberEntries.length}\`\n` +
     `• *Total Codes:* \`${state.otpStats.total || 0}\`\n` +
     `• *Total Users:* \`${state.users.length}\`\n` +
+    `• *Batch Count:* \`${state.batchSize}\` | *OTP Reward:* \`${state.otpReward}\`\n` +
     `• *Active Setup:* *${getActiveSummaryLabel()}*\n` +
-    `• *API URL:* ${state.apiUrlEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
-    `• *API KEY:* ${state.apiKeyEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
-    `• *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}`;
+    `• *API URL:* ${state.apiUrlEnabled ? '🟢 ON' : '🔴 OFF'} | *API KEY:* ${state.apiKeyEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
+    `• *Auto Range:* ${state.autoRangeEnabled ? '🟢 ON' : '🔴 OFF'} | *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}`;
 
   const markup = buildInlineMarkup([
     [
@@ -1081,7 +1065,41 @@ function getMainAdminPayload() {
       inlineCbButton('🟡 Check Balance', 'adm_check_balance', 'primary'),
       inlineCbButton('🟠 Group Setup', 'sub_group_menu', 'primary')
     ],
-    [inlineCbButton('🔴 All OFF', 'all_off_btn', 'danger')]
+    [
+      inlineCbButton('💎 Bot & Reward Config', 'sub_bot_config', 'primary'),
+      inlineCbButton('📣 Broadcast', 'adm_broadcast', 'success')
+    ],
+    [
+      inlineCbButton('👤 User Balance', 'adm_user_bal', 'primary'),
+      inlineCbButton('🔴 All OFF', 'all_off_btn', 'danger')
+    ]
+  ]);
+
+  return { text, markup };
+}
+
+function getBotConfigPayload() {
+  const text =
+    `💎 *BOT & REWARD CONFIG*\n\n` +
+    `• *Batch Number Count:* \`${state.batchSize}\`\n` +
+    `• *OTP Reward:* \`${state.otpReward}\`\n` +
+    `• *Min Withdraw:* \`${state.minWithdraw}\`\n` +
+    `• *Auto Range:* ${state.autoRangeEnabled ? '🟢 ON' : '🔴 OFF'}`;
+
+  const markup = buildInlineMarkup([
+    [
+      inlineCbButton('🔢 Set Batch Count', 'cfg_batch_size', 'primary'),
+      inlineCbButton('💰 Set OTP Reward', 'cfg_otp_reward', 'primary')
+    ],
+    [
+      inlineCbButton('🏦 Set Min Withdraw', 'cfg_min_withdraw', 'primary'),
+      inlineCbButton(
+        state.autoRangeEnabled ? '🔴 Auto Range OFF' : '🟢 Auto Range ON',
+        'tgl_auto_range',
+        state.autoRangeEnabled ? 'danger' : 'success'
+      )
+    ],
+    [inlineCbButton('🟣 Back to Admin Panel', 'back_admin_main', 'primary')]
   ]);
 
   return { text, markup };
@@ -1230,18 +1248,7 @@ setInterval(async () => {
         }
       }
       if (otp) {
-        sess.otpDelivered = true;
-        state.userSession.set(uid, sess);
-        try {
-          await rawSendMessage(
-            uid,
-            `✅ *OTP রিসিভ হয়েছে!*\n\n` +
-              `📱 সার্ভিস: *${item.service}*\n` +
-              `${item.flag || '🌍'} দেশ: *${item.countryLabel || item.countryKey}*\n` +
-              `📞 নম্বর: \`${item.phone}\`\n` +
-              `🔑 OTP কোড: \`${otp}\``
-          );
-        } catch (_) {}
+        await deliverOtpToWaitingUser(uid, sess, item, otp);
         break;
       }
     }
@@ -1290,6 +1297,7 @@ bot.hears('💠 ADMIN PANEL', async (ctx) => {
 });
 
 bot.action('back_admin_main', (ctx) => renderPayload(ctx, getMainAdminPayload));
+bot.action('sub_bot_config', (ctx) => renderPayload(ctx, getBotConfigPayload));
 bot.action('sub_api_url_menu', (ctx) => renderPayload(ctx, getApiUrlSetupPayload));
 bot.action('sub_api_key_menu', (ctx) => renderPayload(ctx, getApiKeySetupPayload));
 bot.action('sub_group_menu', (ctx) => renderPayload(ctx, getGroupSetupPayload));
@@ -1302,9 +1310,7 @@ bot.action('adm_check_balance', async (ctx) => {
   await ctx.answerCbQuery('ব্যালেন্স চেক করা হচ্ছে...');
   try {
     const res = await fetchBalanceViaApi();
-    if (!res.ok) {
-      return sendCleanBoard(ctx, `⚠️ ${res.error}`);
-    }
+    if (!res.ok) return sendCleanBoard(ctx, `⚠️ ${res.error}`);
     await sendCleanBoard(
       ctx,
       `🟡 *API BALANCE RESPONSE:*\n\`${JSON.stringify(res.data, null, 2).slice(0, 1500)}\``
@@ -1367,6 +1373,17 @@ bot.action('tgl_api_key', async (ctx) => {
   );
 });
 
+bot.action('tgl_auto_range', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.autoRangeEnabled = !state.autoRangeEnabled;
+  await dbPut('config/autoRangeEnabled', state.autoRangeEnabled);
+  await renderPayload(
+    ctx,
+    getBotConfigPayload,
+    state.autoRangeEnabled ? 'Auto Range ON' : 'Auto Range OFF'
+  );
+});
+
 bot.action('all_off_btn', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   await turnAllOff();
@@ -1383,7 +1400,7 @@ bot.action('adm_add_number', async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    '1️⃣ সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` অথবা `Telegram` বা আপনার পছন্দমতো):'
+    '1️⃣ সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` অথবা `Telegram`):'
   );
 });
 
@@ -1412,6 +1429,8 @@ function startFieldPrompt(stepKey, promptMsg) {
 }
 
 bot.command('cancel', async (ctx) => {
+  state.waitingSearchRangeFrom.delete(ctx.from.id);
+  state.waitingSupportFrom.delete(ctx.from.id);
   if (state.adminWizard.has(ctx.from.id)) {
     state.adminWizard.delete(ctx.from.id);
     await sendCleanBoard(ctx, '✅ সেটআপ বাতিল করা হয়েছে।');
@@ -1424,6 +1443,11 @@ bot.action('adm_otp_link', startFieldPrompt('set_otp_link', '🔗 নতুন *
 bot.action('adm_otp_id', startFieldPrompt('set_otp_id', '🆔 নতুন *OTP Group ID* পাঠান:'));
 bot.action('cfg_api_url', startFieldPrompt('set_api_url', '🔵 নতুন *API URL* পাঠান (যেমন: `https://nxv-sms.vercel.app`):'));
 bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🟣 নতুন *API KEY* পাঠান:'));
+bot.action('cfg_batch_size', startFieldPrompt('set_batch_size', '🔢 একবারে কয়টি নম্বর দেবে তা লিখুন (`1` থেকে `5`):'));
+bot.action('cfg_otp_reward', startFieldPrompt('set_otp_reward', '💰 প্রতি OTP-তে ইউজার কত ব্যালেন্স পাবে তা লিখুন (যেমন `0.5` বা `0`):'));
+bot.action('cfg_min_withdraw', startFieldPrompt('set_min_withdraw', '🏦 মিনিমাম উইথড্র ব্যালেন্স লিখুন (যেমন `50`):'));
+bot.action('adm_broadcast', startFieldPrompt('set_broadcast_msg', '📣 সব ইউজারকে পাঠানোর জন্য ব্রডকাস্ট মেসেজ লিখুন:'));
+bot.action('adm_user_bal', startFieldPrompt('set_user_bal', '👤 লিখুন: `USER_ID AMOUNT` (যেমন `8771921458 50` বা `8771921458 -20`):'));
 
 bot.command('setotp', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
@@ -1435,6 +1459,15 @@ bot.command('setotp', async (ctx) => {
   }
   await saveOtp(phone, otp);
   await rawSendMessage(ctx.chat.id, `✅ \`${phone}\` নম্বরের জন্য OTP \`${otp}\` সেভ ও পাঠানো হয়েছে।`);
+});
+
+bot.hears('🔍 SEARCH NUMBER', async (ctx) => {
+  await registerUser(ctx.from.id);
+  state.waitingSearchRangeFrom.add(ctx.from.id);
+  await sendCleanBoard(
+    ctx,
+    '🔍 যে দেশের বা রেঞ্জের নম্বর খুঁজছেন তার নাম লিখুন (যেমন: `UK`, `Togo`, `Egypt`, `India`):\n\n_(বাতিল করতে /cancel লিখুন)_'
+  );
 });
 
 bot.hears('🩷 SUPPORT', async (ctx) => {
@@ -1495,8 +1528,7 @@ async function showServiceSelection(ctx, isEdit = false) {
     rows.push(row);
   }
 
-  const msgText = '🟡 *Select a premium Service*';
-  await sendCleanBoard(ctx, msgText, {
+  await sendCleanBoard(ctx, '🟡 *Select a premium Service*', {
     reply_markup: buildInlineMarkup(rows),
     preferEdit: isEdit
   });
@@ -1521,35 +1553,30 @@ async function showCountrySelection(ctx, service, isEdit = true) {
   for (const item of entriesForService) {
     const cKey = item.countryKey || resolveCountryInfo(item.countryLabel).key;
     const cLabel = item.countryLabel || resolveCountryInfo(cKey).label;
-    if (!countryMap.has(cKey)) {
-      countryMap.set(cKey, cLabel);
-    }
+    if (!countryMap.has(cKey)) countryMap.set(cKey, cLabel);
   }
 
   if (isApiReady()) {
-    const panelCountries = await fetchPanelCountriesForService(service);
-    for (const rawLbl of panelCountries) {
-      const info = resolveCountryInfo(rawLbl);
-      if (!countryMap.has(info.key)) {
-        countryMap.set(info.key, info.label);
-      }
+    const panelRanges = await fetchPanelRangeEntries(service);
+    for (const r of panelRanges) {
+      const info = resolveCountryInfo(r.countryLabel);
+      if (!countryMap.has(info.key)) countryMap.set(info.key, info.label);
     }
 
     for (const c of COUNTRY_META) {
       const k = c.name.toLowerCase();
-      if (!countryMap.has(k)) {
-        countryMap.set(k, `${c.flag} ${c.name} (${c.iso})`);
-      }
+      if (!countryMap.has(k)) countryMap.set(k, `${c.flag} ${c.name} (${c.iso})`);
     }
   }
 
   const countries = Array.from(countryMap.entries());
   if (!countries.length) {
-    const emptyText = `⚠️ *${service}* সার্ভিসে এখন কোনো দেশ বা নম্বর নেই।`;
-    const markup = buildInlineMarkup([
-      [inlineCbButton('🔴 BACK TO SERVICE', 'back_srv_list', 'danger')]
-    ]);
-    return sendCleanBoard(ctx, emptyText, { reply_markup: markup, preferEdit: isEdit });
+    return sendCleanBoard(ctx, `⚠️ *${service}* সার্ভিসে এখন কোনো দেশ বা নম্বর নেই।`, {
+      reply_markup: buildInlineMarkup([
+        [inlineCbButton('🔴 BACK TO SERVICE', 'back_srv_list', 'danger')]
+      ]),
+      preferEdit: isEdit
+    });
   }
 
   const rows = [];
@@ -1586,8 +1613,7 @@ async function showCountrySelection(ctx, service, isEdit = true) {
   }
   rows.push([inlineCbButton('🔴 BACK TO SERVICE', 'back_srv_list', 'danger')]);
 
-  const msgText = `📱 *${service} Select Country:*`;
-  await sendCleanBoard(ctx, msgText, {
+  await sendCleanBoard(ctx, `📱 *${service} Select Country:*`, {
     reply_markup: buildInlineMarkup(rows),
     preferEdit: isEdit
   });
@@ -1639,7 +1665,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     flag = sampleMeta.flag || requestedMeta.flag;
 
     if (options.advanceBatch) {
-      offset = (offset + 3) % pool.length;
+      offset = (offset + state.batchSize) % pool.length;
     } else if (!options.keepCurrentBatch) {
       offset = 0;
     }
@@ -1653,7 +1679,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
 
     if (!picked.length || options.advanceBatch || !options.keepCurrentBatch) {
       picked = [];
-      for (let i = 0; i < Math.min(3, pool.length); i++) {
+      for (let i = 0; i < Math.min(state.batchSize, pool.length); i++) {
         picked.push(pool[(offset + i) % pool.length]);
       }
     }
@@ -1668,7 +1694,15 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       flag = existingSess.flag || flag;
     } else {
       try {
-        const apiNum = await fetchNumberViaApi(service, countryKey === 'api_auto' ? '' : countryKey);
+        let effectiveCountryKey = countryKey === 'api_auto' ? '' : countryKey;
+        if (countryKey === 'api_auto' && state.autoRangeEnabled) {
+          const ranges = await fetchPanelRangeEntries(service);
+          if (ranges.length && ranges[0].countryKey) {
+            effectiveCountryKey = ranges[0].countryKey;
+          }
+        }
+
+        const apiNum = await fetchNumberViaApi(service, effectiveCountryKey);
         if (apiNum?.phone) {
           const detected = detectCountryForPhone(apiNum.phone);
           const apiCountryInfo = apiNum.apiCountry
@@ -1759,11 +1793,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
   picked.forEach((item) => {
     const shownNum = formatDisplayPhone(item.phone, stripCC, item.dial);
     keyboardRows.push([
-      inlineCopyButton(
-        `🟢 ${flag} 📋 ${shownNum}`,
-        shownNum,
-        'success'
-      )
+      inlineCopyButton(`🟢 ${flag} 📋 ${shownNum}`, shownNum, 'success')
     ]);
   });
 
@@ -1777,11 +1807,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
   ]);
 
   keyboardRows.push([
-    inlineCbButton(
-      '🔵 Change Country',
-      `chg_cnt_${encodeURIComponent(service)}`,
-      'primary'
-    ),
+    inlineCbButton('🔵 Change Country', `chg_cnt_${encodeURIComponent(service)}`, 'primary'),
     inlineCbButton(
       stripCC ? '🟢 Restore CC' : '🔴 Remove CC',
       'toggle_remove_cc',
@@ -1795,10 +1821,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     keyboardRows.push([inlineCbButton('🟡 Otp Group', 'open_otp_group_fallback', 'primary')]);
   }
 
-  return {
-    text,
-    markup: buildInlineMarkup(keyboardRows)
-  };
+  return { text, markup: buildInlineMarkup(keyboardRows) };
 }
 
 bot.action('cancel_active_number', async (ctx) => {
@@ -1889,7 +1912,36 @@ bot.action('open_otp_group_fallback', async (ctx) => {
 
 bot.hears('🟣 WALLET', async (ctx) => {
   await registerUser(ctx.from.id);
-  return sendCleanBoard(ctx, '🟣 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
+  const bal = await getUserBalance(ctx.from.id);
+  return sendCleanBoard(
+    ctx,
+    `🟣 *MY WALLET*\n\n` +
+      `• ইউজার আইডি: \`${ctx.from.id}\`\n` +
+      `• বর্তমান ব্যালেন্স: *${bal}*\n` +
+      `• প্রতি OTP রিওয়ার্ড: *${state.otpReward}*\n` +
+      `• মিনিমাম উইথড্র: *${state.minWithdraw}*`,
+    {
+      reply_markup: buildInlineMarkup([
+        [inlineCbButton('💸 Withdraw Request', 'req_withdraw', 'success')]
+      ])
+    }
+  );
+});
+
+bot.action('req_withdraw', async (ctx) => {
+  const bal = await getUserBalance(ctx.from.id);
+  if (bal < Number(state.minWithdraw)) {
+    return ctx.answerCbQuery(
+      `মিনিমাম ${state.minWithdraw} ব্যালেন্স প্রয়োজন। আপনার আছে: ${bal}`,
+      { show_alert: true }
+    );
+  }
+  await ctx.answerCbQuery('উইথড্র রিকোয়েস্ট পাঠানো হয়েছে!');
+  await rawSendMessage(
+    SUPPORT_TARGET_ID,
+    `💸 *নতুন উইথড্র রিকোয়েস্ট*\n👤 ইউজার আইডি: \`${ctx.from.id}\`\n💰 ব্যালেন্স: *${bal}*`
+  );
+  await sendCleanBoard(ctx, '✅ আপনার উইথড্র রিকোয়েস্ট অ্যাডমিনের কাছে পাঠানো হয়েছে।');
 });
 
 bot.hears('🔵 TRAFFIC', async (ctx) => {
@@ -1945,6 +1997,16 @@ bot.on('text', async (ctx) => {
   await registerUser(userId);
   const inputText = ctx.message.text.trim();
 
+  if (state.waitingSearchRangeFrom.has(userId)) {
+    state.waitingSearchRangeFrom.delete(userId);
+    const info = resolveCountryInfo(inputText);
+    const { text, markup } = await buildAssignedCard(userId, 'Telegram', info.key, {
+      keepCurrentBatch: false,
+      advanceBatch: false
+    });
+    return sendCleanBoard(ctx, text, { reply_markup: markup });
+  }
+
   if (ADMIN_IDS.includes(userId) && state.adminWizard.has(userId)) {
     const current = state.adminWizard.get(userId);
 
@@ -1954,7 +2016,7 @@ bot.on('text', async (ctx) => {
       state.adminWizard.set(userId, current);
       await rawSendMessage(
         ctx.chat.id,
-        '2️⃣ দেশের নাম লিখুন (যেমন: `Afghanistan`, `Egypt`, `Madagascar`, `Pakistan` ইত্যাদি):'
+        '2️⃣ দেশের নাম লিখুন (যেমন: `Afghanistan`, `Egypt`, `Madagascar`, `Pakistan`):'
       );
       return;
     }
@@ -1982,29 +2044,25 @@ bot.on('text', async (ctx) => {
     if (current.step === 'set_main_link') {
       state.mainGroupLink = inputText;
       await dbPut('config/mainGroupLink', inputText);
-      await rawSendMessage(ctx.chat.id, '✅ Main Group Link সেট হয়েছে।');
-      return;
+      return rawSendMessage(ctx.chat.id, '✅ Main Group Link সেট হয়েছে।');
     }
 
     if (current.step === 'set_main_id') {
       state.mainGroupId = inputText;
       await dbPut('config/mainGroupId', inputText);
-      await rawSendMessage(ctx.chat.id, '✅ Main Group ID সেট হয়েছে।');
-      return;
+      return rawSendMessage(ctx.chat.id, '✅ Main Group ID সেট হয়েছে।');
     }
 
     if (current.step === 'set_otp_link') {
       state.otpGroupLink = inputText;
       await dbPut('config/otpGroupLink', inputText);
-      await rawSendMessage(ctx.chat.id, '✅ OTP Group Link সেট হয়েছে।');
-      return;
+      return rawSendMessage(ctx.chat.id, '✅ OTP Group Link সেট হয়েছে।');
     }
 
     if (current.step === 'set_otp_id') {
       state.otpGroupId = inputText;
       await dbPut('config/otpGroupId', inputText);
-      await rawSendMessage(ctx.chat.id, '✅ OTP Group ID সেট হয়েছে।');
-      return;
+      return rawSendMessage(ctx.chat.id, '✅ OTP Group ID সেট হয়েছে।');
     }
 
     if (current.step === 'set_api_url') {
@@ -2012,8 +2070,7 @@ bot.on('text', async (ctx) => {
       state.cachedApiServices = null;
       state.cachedApiRanges = null;
       await dbPut('config/apiUrl', inputText);
-      await rawSendMessage(ctx.chat.id, `✅ API URL সেট হয়েছে:\n\`${getNormalizedBaseUrl()}\``);
-      return;
+      return rawSendMessage(ctx.chat.id, `✅ API URL সেট হয়েছে:\n\`${getNormalizedBaseUrl()}\``);
     }
 
     if (current.step === 'set_api_key') {
@@ -2021,8 +2078,53 @@ bot.on('text', async (ctx) => {
       state.cachedApiServices = null;
       state.cachedApiRanges = null;
       await dbPut('config/apiKey', inputText);
-      await rawSendMessage(ctx.chat.id, '✅ API KEY সেট হয়েছে।');
-      return;
+      return rawSendMessage(ctx.chat.id, '✅ API KEY সেট হয়েছে।');
+    }
+
+    if (current.step === 'set_batch_size') {
+      const n = Math.min(5, Math.max(1, Number(inputText) || 1));
+      state.batchSize = n;
+      await dbPut('config/batchSize', n);
+      return rawSendMessage(ctx.chat.id, `✅ Batch Number Count সেট হয়েছে: *${n}*`);
+    }
+
+    if (current.step === 'set_otp_reward') {
+      const r = Math.max(0, Number(inputText) || 0);
+      state.otpReward = r;
+      await dbPut('config/otpReward', r);
+      return rawSendMessage(ctx.chat.id, `✅ প্রতি OTP রিওয়ার্ড সেট হয়েছে: *${r}*`);
+    }
+
+    if (current.step === 'set_min_withdraw') {
+      const m = Math.max(0, Number(inputText) || 0);
+      state.minWithdraw = m;
+      await dbPut('config/minWithdraw', m);
+      return rawSendMessage(ctx.chat.id, `✅ মিনিমাম উইথড্র সেট হয়েছে: *${m}*`);
+    }
+
+    if (current.step === 'set_user_bal') {
+      const parts = inputText.split(/\s+/);
+      const targetUid = parts[0];
+      const delta = Number(parts[1]);
+      if (!targetUid || Number.isNaN(delta)) {
+        return rawSendMessage(ctx.chat.id, '⚠️ সঠিক ফরম্যাট: `8771921458 50`');
+      }
+      const updated = await addUserBalance(targetUid, delta);
+      return rawSendMessage(
+        ctx.chat.id,
+        `✅ ইউজার \`${targetUid}\`-এর নতুন ব্যালেন্স: *${updated}*`
+      );
+    }
+
+    if (current.step === 'set_broadcast_msg') {
+      let sentCount = 0;
+      for (const uid of state.users) {
+        try {
+          await rawSendMessage(uid, `📣 *ANNOUNCEMENT*\n\n${inputText}`);
+          sentCount++;
+        } catch (_) {}
+      }
+      return rawSendMessage(ctx.chat.id, `✅ ব্রডকাস্ট সম্পন্ন হয়েছে। মোট পাঠানো হয়েছে: *${sentCount}* জনকে।`);
     }
   }
 
@@ -2067,6 +2169,10 @@ if (SELF_URL) {
     const [
       savedApiUrlEnabled,
       savedApiKeyEnabled,
+      savedAutoRange,
+      savedBatchSize,
+      savedOtpReward,
+      savedMinWithdraw,
       savedApiUrl,
       savedApiKey,
       savedMainLink,
@@ -2076,10 +2182,15 @@ if (SELF_URL) {
       savedJoinCheck,
       savedEntries,
       savedUsers,
+      savedBalances,
       savedOtpStats
     ] = await Promise.all([
       dbGet('config/apiUrlEnabled'),
       dbGet('config/apiKeyEnabled'),
+      dbGet('config/autoRangeEnabled'),
+      dbGet('config/batchSize'),
+      dbGet('config/otpReward'),
+      dbGet('config/minWithdraw'),
       dbGet('config/apiUrl'),
       dbGet('config/apiKey'),
       dbGet('config/mainGroupLink'),
@@ -2089,11 +2200,16 @@ if (SELF_URL) {
       dbGet('config/joinCheck'),
       dbGet('pool/entries'),
       dbGet('users/list'),
+      dbGet('balances'),
       dbGet('stats/otps')
     ]);
 
     if (typeof savedApiUrlEnabled === 'boolean') state.apiUrlEnabled = savedApiUrlEnabled;
     if (typeof savedApiKeyEnabled === 'boolean') state.apiKeyEnabled = savedApiKeyEnabled;
+    if (typeof savedAutoRange === 'boolean') state.autoRangeEnabled = savedAutoRange;
+    if (Number(savedBatchSize) >= 1) state.batchSize = Math.min(5, Number(savedBatchSize));
+    if (typeof savedOtpReward === 'number') state.otpReward = savedOtpReward;
+    if (typeof savedMinWithdraw === 'number') state.minWithdraw = savedMinWithdraw;
 
     if (savedApiUrl) state.apiUrl = savedApiUrl;
     if (savedApiKey) state.apiKey = savedApiKey;
@@ -2105,6 +2221,7 @@ if (SELF_URL) {
     if (typeof savedJoinCheck === 'boolean') state.joinCheck = savedJoinCheck;
     if (Array.isArray(savedEntries)) state.numberEntries = savedEntries;
     if (Array.isArray(savedUsers)) state.users = savedUsers;
+    if (savedBalances && typeof savedBalances === 'object') state.balances = savedBalances;
     if (savedOtpStats && typeof savedOtpStats === 'object') {
       state.otpStats = {
         total: Number(savedOtpStats.total) || 0,
@@ -2117,7 +2234,7 @@ if (SELF_URL) {
   }
 
   await bot.launch();
-  console.log('Bot with Admin Panel is running...');
+  console.log('Bot with full features is running...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
