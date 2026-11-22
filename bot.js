@@ -149,6 +149,16 @@ function inlineCbButton(text, callback_data, style = null) {
   return btn;
 }
 
+function inlineCopyButton(text, copyText, style = null) {
+  const btn = {
+    text,
+    type: 'copy_text',
+    copy_text: { text: String(copyText || '') }
+  };
+  if (style) btn.style = style;
+  return btn;
+}
+
 function inlineUrlButton(text, url, style = null) {
   const btn = { text, url };
   if (style) btn.style = style;
@@ -1739,23 +1749,19 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     otpDelivered: anyOtpFound
   });
 
-  const activeNumbersLine = picked
-    .map((item) => `📞 \`${formatDisplayPhone(item.phone, stripCC, item.dial)}\``)
-    .join('\n');
-
   const statusLine = anyOtpFound
     ? `✅ *${service} OTP Received:*\n${otpLines.join('\n')}`
     : `⏳ *Waiting for OTP....*`;
 
-  const text = `${flag} *${service} Number Assigned:*\n${activeNumbersLine}\n${statusLine}`;
+  const text = `${flag} *${service} Number Assigned:*\n${statusLine}`;
 
   const keyboardRows = [];
   picked.forEach((item) => {
     const shownNum = formatDisplayPhone(item.phone, stripCC, item.dial);
     keyboardRows.push([
-      inlineCbButton(
+      inlineCopyButton(
         `🟢 ${flag} 📋 ${shownNum}`,
-        `copy_num_${encodeURIComponent(item.phone)}`,
+        shownNum,
         'success'
       )
     ]);
@@ -1830,13 +1836,6 @@ bot.action(/^pick_cnt_(.+)__(.+)$/, async (ctx) => {
     advanceBatch: false
   });
   await sendCleanBoard(ctx, text, { reply_markup: markup, preferEdit: true });
-});
-
-bot.action(/^copy_num_(.+)$/, async (ctx) => {
-  const phone = decodeURIComponent(ctx.match[1]);
-  await ctx.answerCbQuery(`নম্বর: ${phone} (উপরের কোড নম্বরে ট্যাপ করে কপি করুন)`, {
-    show_alert: false
-  });
 });
 
 bot.action('toggle_remove_cc', async (ctx) => {
