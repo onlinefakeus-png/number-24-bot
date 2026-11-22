@@ -205,21 +205,15 @@ function buildApiEndpoint(endpointPath, extraParams = {}) {
   return url.toString();
 }
 
-function getApiHeaders() {
-  const headers = {};
-  if (state.apiKeyEnabled && state.apiKey) {
-    const key = String(state.apiKey).trim();
-    headers['x-api-key'] = key;
-    headers['Authorization'] = `Bearer ${key}`;
-  }
-  return headers;
-}
-
 function extractOtpFromPayload(d) {
   if (!d) return null;
   if (typeof d === 'string') {
     const m = d.match(/\b\d{4,8}\b/);
     return m ? m[0] : null;
+  }
+  if (d.status && String(d.status).toUpperCase() === 'RECEIVED' && d.otp) {
+    const match = String(d.otp).match(/\b\d{4,8}\b/);
+    if (match) return match[0];
   }
   const candidates = [
     d.otp,
@@ -251,18 +245,25 @@ function extractNumberFromPayload(d) {
   if (typeof d !== 'object') return null;
 
   const candidates = [
+    d.phoneNumber,
     d.number,
     d.phone,
     d.mobile,
     d.msisdn,
+    d.data?.phoneNumber,
     d.data?.number,
     d.data?.phone,
     d.data?.mobile,
     d.data?.msisdn,
+    d.result?.phoneNumber,
     d.result?.number,
     d.result?.phone,
-    Array.isArray(d.data) ? (d.data[0]?.number || d.data[0]?.phone || d.data[0]) : null,
-    Array.isArray(d.numbers) ? (d.numbers[0]?.number || d.numbers[0]?.phone || d.numbers[0]) : null
+    Array.isArray(d.data)
+      ? (d.data[0]?.phoneNumber || d.data[0]?.number || d.data[0]?.phone || d.data[0])
+      : null,
+    Array.isArray(d.numbers)
+      ? (d.numbers[0]?.phoneNumber || d.numbers[0]?.number || d.numbers[0]?.phone || d.numbers[0])
+      : null
   ];
 
   for (const val of candidates) {
@@ -276,10 +277,11 @@ function extractNumberFromPayload(d) {
 function extractOrderIdFromPayload(d) {
   if (!d || typeof d !== 'object') return null;
   const candidates = [
-    d.order_id,
     d.orderId,
+    d.order_id,
     d.activation_id,
     d.id,
+    d.data?.orderId,
     d.data?.order_id,
     d.data?.id
   ];
@@ -295,29 +297,34 @@ function isApiReady() {
   return Boolean(state.apiUrlEnabled && state.apiUrl);
 }
 
+// NXV / REST API থেকে OTP আনা
 async function fetchOtpViaApi(phone, orderId = '') {
-  if (!isApiReady() || !phone) return null;
+  if (!isApiReady() || (!phone && !orderId)) return null;
   const endpoint = buildApiEndpoint('/get-otp', {
-    action: 'getOtp',
+    orderId,
+    order_id: orderId,
     number: phone,
-    phone,
-    order_id: orderId
+    phone
   });
   console.log('[NXV GET-OTP URL]:', endpoint);
-  const res = await axios.get(endpoint, { headers: getApiHeaders(), timeout: 10000 });
+  const res = await axios.get(endpoint, { timeout: 10000 });
   console.log('[NXV GET-OTP RESP]:', JSON.stringify(res.data));
   return extractOtpFromPayload(res.data || {});
 }
 
+// NXV / REST API থেকে নতুন নম্বর আনা
 async function fetchNumberViaApi(service = '', countryKey = '') {
   if (!isApiReady()) return null;
-  const endpoint = buildApiEndpoint('/get-number', {
-    action: 'getNumber',
-    service,
-    country: countryKey
-  });
+  const params = {
+    service: service && service !== 'NXV Auto' ? service : 'Telegram'
+  };
+  if (countryKey && countryKey !== 'api_auto') {
+    params.country = countryKey;
+  }
+
+  const endpoint = buildApiEndpoint('/get-number', params);
   console.log('[NXV GET-NUMBER URL]:', endpoint);
-  const res = await axios.get(endpoint, { headers: getApiHeaders(), timeout: 10000 });
+  const res = await axios.get(endpoint, { timeout: 10000 });
   console.log('[NXV GET-NUMBER RESP]:', JSON.stringify(res.data));
 
   const data = res.data || {};
@@ -337,13 +344,14 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   };
 }
 
+// NXV / REST API ব্যালেন্স চেক
 async function fetchBalanceViaApi() {
   if (!isApiReady()) {
     return { ok: false, error: 'API URL বা API KEY সক্রিয় নেই।' };
   }
-  const endpoint = buildApiEndpoint('/balance', { action: 'getBalance' });
+  const endpoint = buildApiEndpoint('/balance');
   console.log('[NXV BALANCE URL]:', endpoint);
-  const res = await axios.get(endpoint, { headers: getApiHeaders(), timeout: 10000 });
+  const res = await axios.get(endpoint, { timeout: 10000 });
   console.log('[NXV BALANCE RESP]:', JSON.stringify(res.data));
   return { ok: true, data: res.data };
 }
@@ -828,6 +836,7 @@ function getGroupSetupPayload() {
   return { text, keyboard };
 }
 
+// Auto Checker লুপ (NXV /get-otp থেকে orderId ও phone দিয়ে চেক করবে)
 setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
     if (!sess || !sess.autoChecker || sess.otpDelivered || !Array.isArray(sess.batchEntries)) {
@@ -861,7 +870,7 @@ setInterval(async () => {
       }
     }
   }
-}, 5000);
+}, 4000);
 
 bot.start(async (ctx) => {
   await registerUser(ctx.from.id);
@@ -1084,7 +1093,7 @@ async function showServiceSelection(ctx, isEdit = false) {
     return ctx.reply('⚠️ এখন কোনো সার্ভিস বা নম্বর স্টকে নেই।');
   }
 
-  const listToShow = services.length ? services : ['NXV Auto'];
+  const listToShow = services.length ? services : ['Telegram'];
   const rows = [];
   for (let i = 0; i < listToShow.length; i += 2) {
     const row = [
@@ -1710,7 +1719,7 @@ if (SELF_URL) {
   }
 
   await bot.launch();
-  console.log('Bot with Admin Panel is running (Socket & Cookie removed)...');
+  console.log('Bot with Admin Panel is running...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
