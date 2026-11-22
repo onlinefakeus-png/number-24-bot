@@ -1,5 +1,4 @@
 const { Telegraf, Markup } = require('telegraf');
-const { io } = require('socket.io-client');
 const axios = require('axios');
 const http = require('http');
 
@@ -10,6 +9,7 @@ const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
 
 const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
+const DEFAULT_NXV_BASE = 'https://nxv-sms.vercel.app';
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
@@ -99,19 +99,13 @@ function attachCountryCode(rawNumber, dialCode = '') {
 }
 
 const state = {
-  // স্বাধীন ON / OFF ফ্ল্যাগসমূহ (ডিফল্টে সব OFF যাতে কোনো অটো কানেকশন বা এরর না আসে)
+  // শুধু API URL ও API KEY এর ON / OFF ফ্ল্যাগ (Socket ও Cookie রিমুভ করা হয়েছে)
   apiUrlEnabled: false,
   apiKeyEnabled: false,
-  socketUrlEnabled: false,
-  cookieUrlEnabled: false,
 
-  // সেটআপ ভ্যালুসমূহ
-  apiUrl: process.env.API_URL || '',
+  // API সেটআপ ভ্যালুসমূহ
+  apiUrl: process.env.API_URL || DEFAULT_NXV_BASE,
   apiKey: process.env.API_KEY || '',
-  socketUrl: process.env.SOCKET_URL || '',
-  socketPath: process.env.SOCKET_PATH || '/socket.io/',
-  cookieUrl: process.env.COOKIE_URL || '',
-  cookieValue: process.env.SOCKET_COOKIE || '',
 
   // গ্রুপ ও Join Check সেটিংস
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/your_main_group_link',
@@ -120,7 +114,7 @@ const state = {
   otpGroupId: process.env.OTP_GROUP_ID || '',
   joinCheck: true,
 
-  // প্রতিটি এন্ট্রি: { id, service, countryKey, countryLabel, flag, dial, phone }
+  // প্রতিটি এন্ট্রি: { id, service, countryKey, countryLabel, flag, dial, phone, source, orderId }
   numberEntries: [],
   users: [],
   otpsByPhone: {},
@@ -136,10 +130,10 @@ const state = {
 };
 
 // Firebase Helpers
-async function dbGet(path) {
+async function dbGet(dbPath) {
   if (!FIREBASE_DB_URL) return null;
   try {
-    const res = await axios.get(`${FIREBASE_DB_URL}/${path}.json`);
+    const res = await axios.get(`${FIREBASE_DB_URL}/${dbPath}.json`);
     return res.data;
   } catch (e) {
     console.error('Firebase GET error:', e.message);
@@ -147,10 +141,10 @@ async function dbGet(path) {
   }
 }
 
-async function dbPut(path, data) {
+async function dbPut(dbPath, data) {
   if (!FIREBASE_DB_URL) return false;
   try {
-    await axios.put(`${FIREBASE_DB_URL}/${path}.json`, data);
+    await axios.put(`${FIREBASE_DB_URL}/${dbPath}.json`, data);
     return true;
   } catch (e) {
     console.error('Firebase PUT error:', e.message);
@@ -175,61 +169,188 @@ async function registerUser(userId) {
   }
 }
 
-function parseSocketInput(rawInput) {
-  const trimmed = String(rawInput || '').trim();
-  const normalized = trimmed
-    .replace(/^wss:\/\//i, 'https://')
-    .replace(/^ws:\/\//i, 'http://');
-  try {
-    const parsed = new URL(normalized);
-    const origin = parsed.origin;
-    const path =
-      parsed.pathname && parsed.pathname !== '/'
-        ? parsed.pathname
-        : '/socket.io/';
-    return { origin, path };
-  } catch (_) {
-    return { origin: trimmed, path: state.socketPath || '/socket.io/' };
-  }
-}
-
-async function syncCookieFromUrlIfEnabled() {
-  if (!state.cookieUrlEnabled || !state.cookieUrl) return;
-  try {
-    const res = await axios.get(state.cookieUrl, { timeout: 10000 });
-    const raw = typeof res.data === 'string' ? res.data.trim() : JSON.stringify(res.data || '');
-    if (raw) {
-      state.cookieValue = raw;
-      await dbPut('config/cookieValue', raw);
-    }
-  } catch (e) {
-    console.error('Cookie URL fetch error:', e.message);
-  }
-}
-
 async function turnAllOff() {
   state.apiUrlEnabled = false;
   state.apiKeyEnabled = false;
-  state.socketUrlEnabled = false;
-  state.cookieUrlEnabled = false;
 
   await Promise.all([
     dbPut('config/apiUrlEnabled', false),
-    dbPut('config/apiKeyEnabled', false),
-    dbPut('config/socketUrlEnabled', false),
-    dbPut('config/cookieUrlEnabled', false)
+    dbPut('config/apiKeyEnabled', false)
   ]);
-
-  initSocket();
 }
 
 function getActiveSummaryLabel() {
   const active = [];
   if (state.apiUrlEnabled) active.push('API URL');
   if (state.apiKeyEnabled) active.push('API KEY');
-  if (state.socketUrlEnabled) active.push('SOCKET URL');
-  if (state.cookieUrlEnabled) active.push('COOKIE URL');
   return active.length ? active.join(' + ') : 'ALL OFF';
+}
+
+function getNormalizedBaseUrl() {
+  let raw = String(state.apiUrl || DEFAULT_NXV_BASE).trim();
+  if (!raw) raw = DEFAULT_NXV_BASE;
+  if (!/^https?:\/\//i.test(raw)) {
+    raw = `https://${raw}`;
+  }
+  raw = raw.replace(/\/+$/, '');
+  raw = raw.replace(/\/(get-number|get-otp|active-rangre|cancel-number|balance)$/i, '');
+  return raw;
+}
+
+function buildApiEndpoint(endpointPath, extraParams = {}) {
+  const base = getNormalizedBaseUrl();
+  const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
+  const url = new URL(`${base}${cleanPath}`);
+
+  const params = { ...extraParams };
+  if (state.apiKeyEnabled && state.apiKey && !params.api_key) {
+    params.api_key = String(state.apiKey).trim();
+  }
+
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      url.searchParams.set(k, String(v).trim());
+    }
+  });
+
+  return url.toString();
+}
+
+function extractOtpFromPayload(d) {
+  if (!d) return null;
+  if (typeof d === 'string') {
+    const m = d.match(/\b\d{4,8}\b/);
+    return m ? m[0] : null;
+  }
+  const candidates = [
+    d.otp,
+    d.code,
+    d.sms_code,
+    d.sms,
+    d.message,
+    d.data?.otp,
+    d.data?.code,
+    d.data?.sms_code,
+    d.data?.sms
+  ];
+  for (const item of candidates) {
+    if (!item || typeof item === 'object') continue;
+    const str = String(item).trim();
+    if (/CLICK_TEST_BUTTON|NO_SMS|WAITING|PENDING/i.test(str)) continue;
+    const match = str.match(/\b\d{4,8}\b/);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+function extractNumberFromPayload(d) {
+  if (!d || typeof d !== 'object') return null;
+  const candidates = [
+    d.number,
+    d.phone,
+    d.mobile,
+    d.data?.number,
+    d.data?.phone,
+    d.data?.mobile,
+    d.result?.number,
+    d.result?.phone
+  ];
+  for (const val of candidates) {
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      return String(val).trim();
+    }
+  }
+  return null;
+}
+
+function extractOrderIdFromPayload(d) {
+  if (!d || typeof d !== 'object') return null;
+  const candidates = [
+    d.order_id,
+    d.orderId,
+    d.id,
+    d.data?.order_id,
+    d.data?.id
+  ];
+  for (const val of candidates) {
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      return String(val).trim();
+    }
+  }
+  return null;
+}
+
+function isApiReady() {
+  return Boolean(state.apiUrlEnabled && state.apiUrl);
+}
+
+// NXV / REST API থেকে OTP আনা
+async function fetchOtpViaApi(phone, orderId = '') {
+  if (!isApiReady() || !phone) return null;
+
+  const headers = {};
+  if (state.apiKeyEnabled && state.apiKey) {
+    headers['x-api-key'] = String(state.apiKey).trim();
+    headers['Authorization'] = `Bearer ${String(state.apiKey).trim()}`;
+  }
+
+  const endpoint = buildApiEndpoint('/get-otp', {
+    action: 'getOtp',
+    number: phone,
+    phone,
+    order_id: orderId
+  });
+
+  const res = await axios.get(endpoint, { headers, timeout: 10000 });
+  return extractOtpFromPayload(res.data || {});
+}
+
+// NXV / REST API থেকে নতুন নম্বর আনা
+async function fetchNumberViaApi(service = '', countryKey = '') {
+  if (!isApiReady()) return null;
+
+  const headers = {};
+  if (state.apiKeyEnabled && state.apiKey) {
+    headers['x-api-key'] = String(state.apiKey).trim();
+    headers['Authorization'] = `Bearer ${String(state.apiKey).trim()}`;
+  }
+
+  const endpoint = buildApiEndpoint('/get-number', {
+    action: 'getNumber',
+    service,
+    country: countryKey
+  });
+
+  const res = await axios.get(endpoint, { headers, timeout: 10000 });
+  const data = res.data || {};
+  const rawNum = extractNumberFromPayload(data);
+  if (!rawNum) return null;
+
+  const formattedPhone = rawNum.startsWith('+') ? rawNum : `+${rawNum.replace(/[^\d]/g, '')}`;
+  const orderId = extractOrderIdFromPayload(data);
+
+  return {
+    phone: formattedPhone,
+    orderId,
+    raw: data
+  };
+}
+
+// NXV / REST API ব্যালেন্স চেক
+async function fetchBalanceViaApi() {
+  if (!isApiReady()) {
+    return { ok: false, error: 'API URL বা API KEY সক্রিয় নেই।' };
+  }
+
+  const headers = {};
+  if (state.apiKeyEnabled && state.apiKey) {
+    headers['x-api-key'] = String(state.apiKey).trim();
+    headers['Authorization'] = `Bearer ${String(state.apiKey).trim()}`;
+  }
+
+  const endpoint = buildApiEndpoint('/balance');
+  const res = await axios.get(endpoint, { headers, timeout: 10000 });
+  return { ok: true, data: res.data };
 }
 
 function normalizePhoneKey(phone) {
@@ -462,7 +583,9 @@ async function finalizeAddedNumbers(ctx, service, rawCountry, rawNumbers, source
         countryLabel: countryInfo.label,
         flag: countryInfo.flag,
         dial: countryInfo.dial,
-        phone
+        phone,
+        source: 'manual',
+        orderId: null
       });
       addedCount++;
     }
@@ -515,12 +638,12 @@ async function isUserVerifiedInGroups(ctx) {
 async function sendGroupVerifyPrompt(ctx) {
   const buttons = [];
   if (state.mainGroupLink) {
-    buttons.push([Markup.button.url('📢 Join Main Group', state.mainGroupLink)]);
+    buttons.push([Markup.button.url('🟦 Join Main Group', state.mainGroupLink)]);
   }
   if (state.otpGroupLink) {
-    buttons.push([Markup.button.url('🔐 Join OTP Group', state.otpGroupLink)]);
+    buttons.push([Markup.button.url('🟪 Join OTP Group', state.otpGroupLink)]);
   }
-  buttons.push([Markup.button.callback('✅ Verify Join', 'verify_group_join')]);
+  buttons.push([Markup.button.callback('🟢 Verify Join', 'verify_group_join')]);
 
   await ctx.reply(
     '🔒 বট ব্যবহার করতে হলে আগে নিচের গ্রুপগুলোতে জয়েন করুন এবং **Verify Join** চাপুন:',
@@ -531,13 +654,14 @@ async function sendGroupVerifyPrompt(ctx) {
   );
 }
 
+// কালারড ইমোজিযুক্ত মেইন কিবোর্ড
 function getMainReplyKeyboard(isAdmin) {
   const rows = [
-    ['📞 GET NUMBER'],
-    ['👛 WALLET', '📡 TRAFFIC'],
-    ['✅ WA CHECKER'],
-    ['🌐 LANGUAGE', '🆘 SUPPORT'],
-    ['📄 NUMBER FILE']
+    ['🟢 GET NUMBER'],
+    ['🟣 WALLET', '🔵 TRAFFIC'],
+    ['🩵 WA CHECKER'],
+    ['🟠 LANGUAGE', '🩷 SUPPORT'],
+    ['🟡 NUMBER FILE']
   ];
   if (isAdmin) rows.push(['💠 ADMIN PANEL']);
   return Markup.keyboard(rows).resize();
@@ -549,7 +673,7 @@ function maskSecret(val) {
   return `${val.slice(0, 3)}***${val.slice(-3)}`;
 }
 
-// মেইন অ্যাডমিন প্যানেল: ৪টির আলাদা ON/OFF + All OFF + দেশভিত্তিক ডিলিট
+// মেইন অ্যাডমিন প্যানেল (কালারড বাটনসহ)
 function getMainAdminPayload() {
   const text =
     `💠 *ADMIN PANEL*\n\n` +
@@ -559,22 +683,16 @@ function getMainAdminPayload() {
     `• *Active Setup:* *${getActiveSummaryLabel()}*\n` +
     `• *API URL:* ${state.apiUrlEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
     `• *API KEY:* ${state.apiKeyEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
-    `• *SOCKET URL:* ${state.socketUrlEnabled ? '🟢 ON' : '🔴 OFF'} (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
-    `• *COOKIE URL:* ${state.cookieUrlEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
     `• *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}`;
 
   const keyboard = Markup.inlineKeyboard([
     [
-      Markup.button.callback('➕ Add Number', 'adm_add_number'),
-      Markup.button.callback('🗑️ Delete by Country', 'sub_delete_country')
+      Markup.button.callback('🟢 Add Number', 'adm_add_number'),
+      Markup.button.callback('🔴 Delete by Country', 'sub_delete_country')
     ],
     [
-      Markup.button.callback('🌐 API URL Setup', 'sub_api_url_menu'),
-      Markup.button.callback('🔑 API KEY Setup', 'sub_api_key_menu')
-    ],
-    [
-      Markup.button.callback('⚡ SOCKET URL Setup', 'sub_socket_url_menu'),
-      Markup.button.callback('🍪 COOKIE URL Setup', 'sub_cookie_url_menu')
+      Markup.button.callback('🔵 API URL Setup', 'sub_api_url_menu'),
+      Markup.button.callback('🟣 API KEY Setup', 'sub_api_key_menu')
     ],
     [
       Markup.button.callback(
@@ -587,18 +705,11 @@ function getMainAdminPayload() {
       )
     ],
     [
-      Markup.button.callback(
-        state.socketUrlEnabled ? '🔴 SOCKET OFF' : '🟢 SOCKET ON',
-        'tgl_socket_url'
-      ),
-      Markup.button.callback(
-        state.cookieUrlEnabled ? '🔴 COOKIE OFF' : '🟢 COOKIE ON',
-        'tgl_cookie_url'
-      )
+      Markup.button.callback('🟡 Check Balance', 'adm_check_balance'),
+      Markup.button.callback('🟠 Group Setup', 'sub_group_menu')
     ],
     [
-      Markup.button.callback('👥 Group Setup', 'sub_group_menu'),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+      Markup.button.callback('🔴 All OFF', 'all_off_btn')
     ]
   ]);
 
@@ -607,20 +718,20 @@ function getMainAdminPayload() {
 
 function getApiUrlSetupPayload() {
   const text =
-    `🌐 *API URL SETUP*\n\n` +
+    `🔵 *API URL SETUP*\n\n` +
     `• *Status:* *${state.apiUrlEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
-    `• *API URL:* \`${state.apiUrl || 'Not set'}\``;
+    `• *API URL:* \`${state.apiUrl || DEFAULT_NXV_BASE}\``;
 
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('✏️ Set API URL', 'cfg_api_url')],
+    [Markup.button.callback('🟦 Set API URL', 'cfg_api_url')],
     [
       Markup.button.callback(
         state.apiUrlEnabled ? '🔴 API URL OFF' : '🟢 API URL ON',
         'tgl_api_url'
       ),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+      Markup.button.callback('🔴 All OFF', 'all_off_btn')
     ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+    [Markup.button.callback('🟣 Back to Admin Panel', 'back_admin_main')]
   ]);
 
   return { text, keyboard };
@@ -628,66 +739,20 @@ function getApiUrlSetupPayload() {
 
 function getApiKeySetupPayload() {
   const text =
-    `🔑 *API KEY SETUP*\n\n` +
+    `🟣 *API KEY SETUP*\n\n` +
     `• *Status:* *${state.apiKeyEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
     `• *API KEY:* \`${maskSecret(state.apiKey)}\``;
 
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('✏️ Set API KEY', 'cfg_api_key')],
+    [Markup.button.callback('🟪 Set API KEY', 'cfg_api_key')],
     [
       Markup.button.callback(
         state.apiKeyEnabled ? '🔴 API KEY OFF' : '🟢 API KEY ON',
         'tgl_api_key'
       ),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
+      Markup.button.callback('🔴 All OFF', 'all_off_btn')
     ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
-  ]);
-
-  return { text, keyboard };
-}
-
-function getSocketUrlSetupPayload() {
-  const fullSocket = state.socketUrl
-    ? `${state.socketUrl}${state.socketPath || '/socket.io/'}`
-    : 'Not set';
-  const text =
-    `⚡ *SOCKET URL SETUP*\n\n` +
-    `• *Status:* *${state.socketUrlEnabled ? '🟢 ON' : '🔴 OFF'}* (${socketConnected ? 'Connected' : 'Disconnected'})\n` +
-    `• *SOCKET URL:* \`${fullSocket}\``;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('✏️ Set SOCKET URL', 'cfg_socket_url')],
-    [
-      Markup.button.callback(
-        state.socketUrlEnabled ? '🔴 SOCKET OFF' : '🟢 SOCKET ON',
-        'tgl_socket_url'
-      ),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
-    ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
-  ]);
-
-  return { text, keyboard };
-}
-
-function getCookieUrlSetupPayload() {
-  const text =
-    `🍪 *COOKIE URL SETUP*\n\n` +
-    `• *Status:* *${state.cookieUrlEnabled ? '🟢 ON' : '🔴 OFF'}*\n` +
-    `• *COOKIE URL:* \`${state.cookieUrl || 'Not set'}\`\n` +
-    `• *Loaded Cookie:* \`${state.cookieValue ? 'Available' : 'Empty'}\``;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('✏️ Set COOKIE URL', 'cfg_cookie_url')],
-    [
-      Markup.button.callback(
-        state.cookieUrlEnabled ? '🔴 COOKIE OFF' : '🟢 COOKIE ON',
-        'tgl_cookie_url'
-      ),
-      Markup.button.callback('⛔ All OFF', 'all_off_btn')
-    ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+    [Markup.button.callback('🟣 Back to Admin Panel', 'back_admin_main')]
   ]);
 
   return { text, keyboard };
@@ -706,9 +771,9 @@ function getDeleteByCountryPayload() {
   const list = Array.from(countryGroups.entries());
   if (!list.length) {
     return {
-      text: '🗑️ *DELETE BY COUNTRY*\n\nস্টকে কোনো নম্বর নেই।',
+      text: '🔴 *DELETE BY COUNTRY*\n\nস্টকে কোনো নম্বর নেই।',
       keyboard: Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+        [Markup.button.callback('🟣 Back to Admin Panel', 'back_admin_main')]
       ])
     };
   }
@@ -718,7 +783,7 @@ function getDeleteByCountryPayload() {
     const [k1, info1] = list[i];
     const row = [
       Markup.button.callback(
-        `🗑️ ${info1.label} (${info1.count})`,
+        `🔴 ${info1.label} (${info1.count})`,
         `del_cnt_${encodeURIComponent(k1)}`
       )
     ];
@@ -726,18 +791,18 @@ function getDeleteByCountryPayload() {
       const [k2, info2] = list[i + 1];
       row.push(
         Markup.button.callback(
-          `🗑️ ${info2.label} (${info2.count})`,
+          `🔴 ${info2.label} (${info2.count})`,
           `del_cnt_${encodeURIComponent(k2)}`
         )
       );
     }
     rows.push(row);
   }
-  rows.push([Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]);
+  rows.push([Markup.button.callback('🟣 Back to Admin Panel', 'back_admin_main')]);
 
   return {
     text:
-      `🗑️ *DELETE BY COUNTRY*\n\n` +
+      `🔴 *DELETE BY COUNTRY*\n\n` +
       `যে দেশের বাটনে চাপবেন, শুধুমাত্র সেই দেশের নম্বরগুলো ডিলিট হবে:`,
     keyboard: Markup.inlineKeyboard(rows)
   };
@@ -745,7 +810,7 @@ function getDeleteByCountryPayload() {
 
 function getGroupSetupPayload() {
   const text =
-    `👥 *GROUP SETUP*\n\n` +
+    `🟠 *GROUP SETUP*\n\n` +
     `• *Join Check:* ${state.joinCheck ? '🟢 ON' : '🔴 OFF'}\n` +
     `• *Main Link:* ${state.mainGroupLink || 'Not set'}\n` +
     `• *Main ID:* \`${state.mainGroupId || 'Not set'}\`\n` +
@@ -754,12 +819,12 @@ function getGroupSetupPayload() {
 
   const keyboard = Markup.inlineKeyboard([
     [
-      Markup.button.callback('🔗 Set Main Link', 'adm_main_link'),
-      Markup.button.callback('🆔 Set Main ID', 'adm_main_id')
+      Markup.button.callback('🟦 Set Main Link', 'adm_main_link'),
+      Markup.button.callback('🟦 Set Main ID', 'adm_main_id')
     ],
     [
-      Markup.button.callback('🔗 Set OTP Link', 'adm_otp_link'),
-      Markup.button.callback('🆔 Set OTP ID', 'adm_otp_id')
+      Markup.button.callback('🟪 Set OTP Link', 'adm_otp_link'),
+      Markup.button.callback('🟪 Set OTP ID', 'adm_otp_id')
     ],
     [
       Markup.button.callback(
@@ -767,104 +832,13 @@ function getGroupSetupPayload() {
         'adm_toggle_join'
       )
     ],
-    [Markup.button.callback('🔙 Back to Admin Panel', 'back_admin_main')]
+    [Markup.button.callback('🟣 Back to Admin Panel', 'back_admin_main')]
   ]);
 
   return { text, keyboard };
 }
 
-// HTTP REST API (API URL ও API KEY উভয়ই ON থাকলে বা API URL ON থাকলে কাজ করবে)
-async function fetchOtpViaApi(phone) {
-  if (!state.apiUrlEnabled || !state.apiUrl || !phone) return null;
-  const params = { action: 'getOtp', number: phone, phone };
-  if (state.apiKeyEnabled && state.apiKey) {
-    params.api_key = state.apiKey;
-  }
-  const res = await axios.get(state.apiUrl, { params, timeout: 10000 });
-  const d = res.data || {};
-  return d.otp || d.code || d.sms_code || d.data?.otp || d.data?.code || null;
-}
-
-// Socket.IO (শুধুমাত্র state.socketUrlEnabled ও state.socketUrl সেট থাকলে কানেক্ট হবে)
-let socketClient = null;
-let socketConnected = false;
-
-function initSocket() {
-  if (socketClient) {
-    try {
-      socketClient.removeAllListeners();
-      socketClient.disconnect();
-    } catch (_) {}
-    socketClient = null;
-  }
-  socketConnected = false;
-
-  if (!state.socketUrlEnabled || !state.socketUrl) {
-    return;
-  }
-
-  const extraHeaders = {};
-  if (state.cookieUrlEnabled && state.cookieValue) {
-    extraHeaders.Cookie = state.cookieValue;
-  }
-
-  socketClient = io(state.socketUrl, {
-    path: state.socketPath || '/socket.io/',
-    transports: ['websocket'],
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 5000,
-    extraHeaders
-  });
-
-  socketClient.on('connect', () => {
-    socketConnected = true;
-    console.log('Socket.IO connected:', state.socketUrl);
-  });
-
-  socketClient.on('disconnect', (reason) => {
-    socketConnected = false;
-    console.log('Socket.IO disconnected:', reason);
-  });
-
-  socketClient.on('connect_error', (err) => {
-    socketConnected = false;
-    if (state.socketUrlEnabled) {
-      console.log('Socket.IO error (fallback ready):', err.message);
-    }
-  });
-
-  const handleIncomingSms = async (payload) => {
-    if (!payload) return;
-    const phone =
-      payload.number ||
-      payload.phone ||
-      payload.cli ||
-      payload.data?.number ||
-      payload.data?.phone;
-    const rawText =
-      payload.otp ||
-      payload.code ||
-      payload.sms ||
-      payload.message ||
-      payload.data?.otp ||
-      '';
-    const match = String(rawText).match(/\b\d{4,8}\b/);
-    const otp = match ? match[0] : String(rawText).trim();
-    if (phone && otp) {
-      await saveOtp(phone, otp);
-    }
-  };
-
-  socketClient.onAny(async (_eventName, ...args) => {
-    const first = args[0];
-    if (first && typeof first === 'object') {
-      await handleIncomingSms(first);
-    }
-  });
-}
-
-// Auto Checker লুপ
+// Auto Checker লুপ (API ON থাকলে NXV /get-otp থেকেও চেক করবে)
 setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
     if (!sess || !sess.autoChecker || sess.otpDelivered || !Array.isArray(sess.batchEntries)) {
@@ -872,9 +846,9 @@ setInterval(async () => {
     }
     for (const item of sess.batchEntries) {
       let otp = await getSavedOtp(item.phone);
-      if (!otp && state.apiUrlEnabled) {
+      if (!otp && isApiReady()) {
         try {
-          otp = await fetchOtpViaApi(item.phone);
+          otp = await fetchOtpViaApi(item.phone, item.orderId || '');
           if (otp) await saveOtp(item.phone, otp);
         } catch (_) {}
       }
@@ -946,10 +920,27 @@ bot.hears('💠 ADMIN PANEL', async (ctx) => {
 bot.action('back_admin_main', (ctx) => renderPayload(ctx, getMainAdminPayload));
 bot.action('sub_api_url_menu', (ctx) => renderPayload(ctx, getApiUrlSetupPayload));
 bot.action('sub_api_key_menu', (ctx) => renderPayload(ctx, getApiKeySetupPayload));
-bot.action('sub_socket_url_menu', (ctx) => renderPayload(ctx, getSocketUrlSetupPayload));
-bot.action('sub_cookie_url_menu', (ctx) => renderPayload(ctx, getCookieUrlSetupPayload));
 bot.action('sub_group_menu', (ctx) => renderPayload(ctx, getGroupSetupPayload));
 bot.action('sub_delete_country', (ctx) => renderPayload(ctx, getDeleteByCountryPayload));
+
+bot.action('adm_check_balance', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) {
+    return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
+  }
+  await ctx.answerCbQuery('ব্যালেন্স চেক করা হচ্ছে...');
+  try {
+    const res = await fetchBalanceViaApi();
+    if (!res.ok) {
+      return ctx.reply(`⚠️ ${res.error}`);
+    }
+    await ctx.reply(
+      `🟡 *API BALANCE RESPONSE:*\n\`${JSON.stringify(res.data, null, 2)}\``,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    await ctx.reply(`❌ ব্যালেন্স চেক ব্যর্থ: \`${err.message}\``, { parse_mode: 'Markdown' });
+  }
+});
 
 // নির্দিষ্ট একটি দেশের নম্বর ডিলিট করা
 bot.action(/^del_cnt_(.+)$/, async (ctx) => {
@@ -975,7 +966,7 @@ bot.action(/^del_cnt_(.+)$/, async (ctx) => {
   );
 });
 
-// ৪টির আলাদা ON / OFF টগল বাটন
+// API URL ও API KEY এর আলাদা ON / OFF টগল বাটন
 bot.action('tgl_api_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiUrlEnabled = !state.apiUrlEnabled;
@@ -998,37 +989,10 @@ bot.action('tgl_api_key', async (ctx) => {
   );
 });
 
-bot.action('tgl_socket_url', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.socketUrlEnabled = !state.socketUrlEnabled;
-  await dbPut('config/socketUrlEnabled', state.socketUrlEnabled);
-  initSocket();
-  await renderPayload(
-    ctx,
-    getSocketUrlSetupPayload,
-    state.socketUrlEnabled ? 'SOCKET URL ON' : 'SOCKET URL OFF'
-  );
-});
-
-bot.action('tgl_cookie_url', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.cookieUrlEnabled = !state.cookieUrlEnabled;
-  await dbPut('config/cookieUrlEnabled', state.cookieUrlEnabled);
-  if (state.cookieUrlEnabled && state.cookieUrl) {
-    await syncCookieFromUrlIfEnabled();
-  }
-  initSocket();
-  await renderPayload(
-    ctx,
-    getCookieUrlSetupPayload,
-    state.cookieUrlEnabled ? 'COOKIE URL ON' : 'COOKIE URL OFF'
-  );
-});
-
 bot.action('all_off_btn', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   await turnAllOff();
-  await renderPayload(ctx, getMainAdminPayload, 'সবকিছু OFF করা হয়েছে');
+  await renderPayload(ctx, getMainAdminPayload, 'সব API অপশন OFF করা হয়েছে');
 });
 
 bot.action('adm_add_number', async (ctx) => {
@@ -1080,10 +1044,8 @@ bot.action('adm_main_link', startFieldPrompt('set_main_link', '🔗 নতুন
 bot.action('adm_main_id', startFieldPrompt('set_main_id', '🆔 নতুন *Main Group ID* পাঠান:'));
 bot.action('adm_otp_link', startFieldPrompt('set_otp_link', '🔗 নতুন *OTP Group Link* পাঠান:'));
 bot.action('adm_otp_id', startFieldPrompt('set_otp_id', '🆔 নতুন *OTP Group ID* পাঠান:'));
-bot.action('cfg_socket_url', startFieldPrompt('set_socket_url', '⚡ নতুন *SOCKET URL* পাঠান:'));
-bot.action('cfg_cookie_url', startFieldPrompt('set_cookie_url', '🍪 নতুন *COOKIE URL* পাঠান:'));
-bot.action('cfg_api_url', startFieldPrompt('set_api_url', '🌐 নতুন *API URL* পাঠান:'));
-bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🔑 নতুন *API KEY* পাঠান:'));
+bot.action('cfg_api_url', startFieldPrompt('set_api_url', '🔵 নতুন *API URL* পাঠান (যেমন: `https://nxv-sms.vercel.app`):'));
+bot.action('cfg_api_key', startFieldPrompt('set_api_key', '🟣 নতুন *API KEY* পাঠান:'));
 
 bot.command('setotp', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
@@ -1099,16 +1061,16 @@ bot.command('setotp', async (ctx) => {
   });
 });
 
-bot.hears('🆘 SUPPORT', async (ctx) => {
+bot.hears('🩷 SUPPORT', async (ctx) => {
   await registerUser(ctx.from.id);
   state.waitingSupportFrom.add(ctx.from.id);
-  await ctx.reply('🆘 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
+  await ctx.reply('🩷 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
 });
 
-bot.hears('📄 NUMBER FILE', async (ctx) => {
+bot.hears('🟡 NUMBER FILE', async (ctx) => {
   await registerUser(ctx.from.id);
   if (!state.numberEntries.length) {
-    return ctx.reply('📄 বর্তমানে কোনো নম্বর ফাইল/স্টক যুক্ত নেই।');
+    return ctx.reply('🟡 বর্তমানে কোনো নম্বর ফাইল/স্টক যুক্ত নেই।');
   }
   const summaryMap = new Map();
   for (const item of state.numberEntries) {
@@ -1119,30 +1081,31 @@ bot.hears('📄 NUMBER FILE', async (ctx) => {
     ([key, count]) => `• *${key}*: \`${count}\`টি`
   );
   await ctx.reply(
-    `📄 *NUMBER FILE STOCK*\n\n${lines.join('\n')}\n\n📦 মোট সংরক্ষিত নম্বর: \`${state.numberEntries.length}\`টি`,
+    `🟡 *NUMBER FILE STOCK*\n\n${lines.join('\n')}\n\n📦 মোট সংরক্ষিত নম্বর: \`${state.numberEntries.length}\`টি`,
     { parse_mode: 'Markdown' }
   );
 });
 
 async function showServiceSelection(ctx, isEdit = false) {
   const services = [...new Set(state.numberEntries.map((e) => e.service).filter(Boolean))];
-  if (!services.length) {
+  if (!services.length && !isApiReady()) {
     return ctx.reply('⚠️ এখন কোনো সার্ভিস বা নম্বর স্টকে নেই।');
   }
 
+  const listToShow = services.length ? services : ['NXV Auto'];
   const rows = [];
-  for (let i = 0; i < services.length; i += 2) {
+  for (let i = 0; i < listToShow.length; i += 2) {
     const row = [
       Markup.button.callback(
-        `📱 ${services[i]}`,
-        `pick_srv_${encodeURIComponent(services[i])}`
+        `🟢 ${listToShow[i]}`,
+        `pick_srv_${encodeURIComponent(listToShow[i])}`
       )
     ];
-    if (services[i + 1]) {
+    if (listToShow[i + 1]) {
       row.push(
         Markup.button.callback(
-          `📱 ${services[i + 1]}`,
-          `pick_srv_${encodeURIComponent(services[i + 1])}`
+          `🔵 ${listToShow[i + 1]}`,
+          `pick_srv_${encodeURIComponent(listToShow[i + 1])}`
         )
       );
     }
@@ -1162,7 +1125,7 @@ async function showServiceSelection(ctx, isEdit = false) {
   await ctx.reply(msgText, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) });
 }
 
-bot.hears('📞 GET NUMBER', async (ctx) => {
+bot.hears('🟢 GET NUMBER', async (ctx) => {
   await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
   if (!isAdmin && !(await isUserVerifiedInGroups(ctx))) {
@@ -1187,9 +1150,22 @@ async function showCountrySelection(ctx, service, isEdit = true) {
 
   const countries = Array.from(countryMap.entries());
   if (!countries.length) {
+    if (isApiReady()) {
+      const { text, keyboard } = await buildAssignedCard(ctx.from.id, service, 'api_auto', {
+        keepCurrentBatch: false,
+        advanceBatch: false
+      });
+      if (isEdit) {
+        try {
+          return await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
+        } catch (_) {}
+      }
+      return ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
+    }
+
     const emptyText = `⚠️ *${service}* সার্ভিসে এখন কোনো দেশ বা নম্বর নেই।`;
     const kb = Markup.inlineKeyboard([
-      [Markup.button.callback('🔙 Back to Service', 'back_srv_list')]
+      [Markup.button.callback('🟣 Back to Service', 'back_srv_list')]
     ]);
     if (isEdit) {
       try {
@@ -1204,7 +1180,7 @@ async function showCountrySelection(ctx, service, isEdit = true) {
     const [k1, lbl1] = countries[i];
     const row = [
       Markup.button.callback(
-        lbl1,
+        `🟦 ${lbl1}`,
         `pick_cnt_${encodeURIComponent(service)}__${encodeURIComponent(k1)}`
       )
     ];
@@ -1212,14 +1188,14 @@ async function showCountrySelection(ctx, service, isEdit = true) {
       const [k2, lbl2] = countries[i + 1];
       row.push(
         Markup.button.callback(
-          lbl2,
+          `🟪 ${lbl2}`,
           `pick_cnt_${encodeURIComponent(service)}__${encodeURIComponent(k2)}`
         )
       );
     }
     rows.push(row);
   }
-  rows.push([Markup.button.callback('🔙 Back to Service', 'back_srv_list')]);
+  rows.push([Markup.button.callback('🟣 Back to Service', 'back_srv_list')]);
 
   const msgText = `📱 *${service} Select Country:*`;
   if (isEdit) {
@@ -1262,20 +1238,9 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       (e.countryKey || resolveCountryInfo(e.countryLabel).key) === countryKey
   );
 
-  if (!pool.length) {
-    return {
-      text: `⚠️ *${service}* (${countryKey}) এর কোনো নম্বর স্টকে নেই।`,
-      keyboard: Markup.inlineKeyboard([
-        [Markup.button.callback('🌐 Change Country', `chg_cnt_${encodeURIComponent(service)}`)],
-        [Markup.button.callback('🔙 Back to Service', 'back_srv_list')]
-      ])
-    };
-  }
-
-  const sampleMeta = pool[0];
-  const countryLabel = sampleMeta.countryLabel || resolveCountryInfo(countryKey).label;
-  const flag = sampleMeta.flag || resolveCountryInfo(countryLabel).flag;
-
+  let picked = [];
+  let countryLabel = resolveCountryInfo(countryKey).label;
+  let flag = resolveCountryInfo(countryLabel).flag;
   let offset =
     typeof existingSess.offset === 'number' &&
     existingSess.service === service &&
@@ -1283,31 +1248,84 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       ? existingSess.offset
       : 0;
 
-  if (options.advanceBatch) {
-    offset = (offset + 3) % pool.length;
-  } else if (!options.keepCurrentBatch) {
-    offset = 0;
+  if (pool.length) {
+    const sampleMeta = pool[0];
+    countryLabel = sampleMeta.countryLabel || resolveCountryInfo(countryKey).label;
+    flag = sampleMeta.flag || resolveCountryInfo(countryLabel).flag;
+
+    if (options.advanceBatch) {
+      offset = (offset + 3) % pool.length;
+    } else if (!options.keepCurrentBatch) {
+      offset = 0;
+    }
+
+    picked =
+      options.keepCurrentBatch &&
+      Array.isArray(existingSess.batchEntries) &&
+      existingSess.batchEntries.length
+        ? existingSess.batchEntries
+        : [];
+
+    if (!picked.length || options.advanceBatch || !options.keepCurrentBatch) {
+      picked = [];
+      for (let i = 0; i < Math.min(3, pool.length); i++) {
+        picked.push(pool[(offset + i) % pool.length]);
+      }
+    }
+  } else if (isApiReady()) {
+    if (
+      options.keepCurrentBatch &&
+      Array.isArray(existingSess.batchEntries) &&
+      existingSess.batchEntries.length
+    ) {
+      picked = existingSess.batchEntries;
+      countryLabel = existingSess.countryLabel || countryLabel;
+      flag = existingSess.flag || flag;
+    } else {
+      try {
+        const apiNum = await fetchNumberViaApi(service, countryKey === 'api_auto' ? '' : countryKey);
+        if (apiNum?.phone) {
+          const cInfo = detectCountryForPhone(apiNum.phone);
+          countryLabel = cInfo.label;
+          flag = cInfo.label.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] || '🌍';
+          picked = [
+            {
+              service,
+              countryKey: cInfo.key,
+              countryLabel,
+              flag,
+              dial: '',
+              phone: apiNum.phone,
+              source: 'api',
+              orderId: apiNum.orderId || null
+            }
+          ];
+        }
+      } catch (_) {}
+    }
   }
 
-  let picked =
-    options.keepCurrentBatch &&
-    Array.isArray(existingSess.batchEntries) &&
-    existingSess.batchEntries.length
-      ? existingSess.batchEntries
-      : [];
-
-  if (!picked.length || options.advanceBatch || !options.keepCurrentBatch) {
-    picked = [];
-    for (let i = 0; i < Math.min(3, pool.length); i++) {
-      picked.push(pool[(offset + i) % pool.length]);
-    }
+  if (!picked.length) {
+    return {
+      text: `⚠️ *${service}* (${countryKey}) এর কোনো নম্বর পাওয়া যায়নি।`,
+      keyboard: Markup.inlineKeyboard([
+        [Markup.button.callback('🔵 Change Country', `chg_cnt_${encodeURIComponent(service)}`)],
+        [Markup.button.callback('🟣 Back to Service', 'back_srv_list')]
+      ])
+    };
   }
 
   const otpLines = [];
   let anyOtpFound = false;
 
   for (const item of picked) {
-    const savedOtp = await getSavedOtp(item.phone);
+    let savedOtp = await getSavedOtp(item.phone);
+    if (!savedOtp && isApiReady()) {
+      try {
+        savedOtp = await fetchOtpViaApi(item.phone, item.orderId || '');
+        if (savedOtp) await saveOtp(item.phone, savedOtp);
+      } catch (_) {}
+    }
     if (savedOtp) {
       anyOtpFound = true;
       otpLines.push(`✅ \`${item.phone}\` → 🔑 *${savedOtp}*`);
@@ -1318,6 +1336,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     service,
     countryKey,
     countryLabel,
+    flag,
     batchEntries: picked,
     offset,
     autoChecker,
@@ -1332,15 +1351,16 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
   const text = `${flag} *${service} Number Assigned:*\n${statusLine}`;
 
   const keyboardRows = [];
-  for (const item of picked) {
+  picked.forEach((item, idx) => {
     const shownNum = formatDisplayPhone(item.phone, stripCC, item.dial);
+    const colorDot = idx % 2 === 0 ? '🟢' : '🔵';
     keyboardRows.push([
       Markup.button.callback(
-        `${flag} 📋 ${shownNum}`,
+        `${colorDot} ${flag} 📋 ${shownNum}`,
         `copy_num_${encodeURIComponent(item.phone)}`
       )
     ]);
-  }
+  });
 
   keyboardRows.push([
     Markup.button.callback(
@@ -1348,29 +1368,29 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       'toggle_auto_checker'
     ),
     Markup.button.callback(
-      stripCC ? '➕ Restore CC' : '✖ Remove CC',
+      stripCC ? '🟠 Restore CC' : '🟡 Remove CC',
       'toggle_remove_cc'
     )
   ]);
 
   keyboardRows.push([
     Markup.button.callback(
-      '🔄 Change Number',
+      '🔵 Change Number',
       `chg_num_${encodeURIComponent(service)}__${encodeURIComponent(countryKey)}`
     )
   ]);
 
   keyboardRows.push([
     Markup.button.callback(
-      '🌐 Change Country',
+      '🟣 Change Country',
       `chg_cnt_${encodeURIComponent(service)}`
     )
   ]);
 
   if (state.otpGroupLink && /^https?:\/\//i.test(state.otpGroupLink)) {
-    keyboardRows.push([Markup.button.url('📂 Otp Group', state.otpGroupLink)]);
+    keyboardRows.push([Markup.button.url('🟪 Otp Group', state.otpGroupLink)]);
   } else {
-    keyboardRows.push([Markup.button.callback('📂 Otp Group', 'open_otp_group_fallback')]);
+    keyboardRows.push([Markup.button.callback('🟪 Otp Group', 'open_otp_group_fallback')]);
   }
 
   return {
@@ -1455,28 +1475,29 @@ bot.action('open_otp_group_fallback', async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.reply(
     state.otpGroupLink
-      ? `📂 OTP Group Link: ${state.otpGroupLink}`
-      : '📂 OTP Group Link এখনো সেট করা হয়নি।'
+      ? `🟪 OTP Group Link: ${state.otpGroupLink}`
+      : '🟪 OTP Group Link এখনো সেট করা হয়নি।'
   );
 });
 
-bot.hears('👛 WALLET', async (ctx) => {
+bot.hears('🟣 WALLET', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply('👛 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
+  return ctx.reply('🟣 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
 });
 
-bot.hears('📡 TRAFFIC', async (ctx) => {
+bot.hears('🔵 TRAFFIC', async (ctx) => {
   await registerUser(ctx.from.id);
   return ctx.reply(buildTrafficReportText(), { parse_mode: 'Markdown' });
 });
 
-bot.hears('✅ WA CHECKER', async (ctx) => {
+bot.hears('🩵 WA CHECKER', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply('✅ WhatsApp Checker সার্ভিস প্রস্তুত।');
+  return ctx.reply('🩵 WhatsApp Checker সার্ভিস প্রস্তুত।');
 });
-bot.hears('🌐 LANGUAGE', async (ctx) => {
+
+bot.hears('🟠 LANGUAGE', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply('🌐 বর্তমান ভাষা: বাংলা (BN)');
+  return ctx.reply('🟠 বর্তমান ভাষা: বাংলা (BN)');
 });
 
 bot.on('document', async (ctx) => {
@@ -1578,36 +1599,10 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    if (current.step === 'set_socket_url') {
-      const { origin, path } = parseSocketInput(inputText);
-      state.socketUrl = origin;
-      state.socketPath = path;
-      await dbPut('config/socketUrl', origin);
-      await dbPut('config/socketPath', path);
-      initSocket();
-      await ctx.reply(`✅ SOCKET URL সেট হয়েছে:\n\`${origin}${path}\``, {
-        parse_mode: 'Markdown'
-      });
-      return;
-    }
-
-    if (current.step === 'set_cookie_url') {
-      state.cookieUrl = inputText;
-      await dbPut('config/cookieUrl', inputText);
-      if (state.cookieUrlEnabled) {
-        await syncCookieFromUrlIfEnabled();
-        initSocket();
-      }
-      await ctx.reply(`✅ COOKIE URL সেট হয়েছে:\n\`${inputText}\``, {
-        parse_mode: 'Markdown'
-      });
-      return;
-    }
-
     if (current.step === 'set_api_url') {
       state.apiUrl = inputText;
       await dbPut('config/apiUrl', inputText);
-      await ctx.reply(`✅ API URL সেট হয়েছে:\n\`${inputText}\``, {
+      await ctx.reply(`✅ API URL সেট হয়েছে:\n\`${getNormalizedBaseUrl()}\``, {
         parse_mode: 'Markdown'
       });
       return;
@@ -1663,14 +1658,8 @@ if (SELF_URL) {
     const [
       savedApiUrlEnabled,
       savedApiKeyEnabled,
-      savedSocketUrlEnabled,
-      savedCookieUrlEnabled,
       savedApiUrl,
       savedApiKey,
-      savedSocketUrl,
-      savedSocketPath,
-      savedCookieUrl,
-      savedCookieValue,
       savedMainLink,
       savedMainId,
       savedOtpLink,
@@ -1682,14 +1671,8 @@ if (SELF_URL) {
     ] = await Promise.all([
       dbGet('config/apiUrlEnabled'),
       dbGet('config/apiKeyEnabled'),
-      dbGet('config/socketUrlEnabled'),
-      dbGet('config/cookieUrlEnabled'),
       dbGet('config/apiUrl'),
       dbGet('config/apiKey'),
-      dbGet('config/socketUrl'),
-      dbGet('config/socketPath'),
-      dbGet('config/cookieUrl'),
-      dbGet('config/cookieValue'),
       dbGet('config/mainGroupLink'),
       dbGet('config/mainGroupId'),
       dbGet('config/otpGroupLink'),
@@ -1702,15 +1685,9 @@ if (SELF_URL) {
 
     if (typeof savedApiUrlEnabled === 'boolean') state.apiUrlEnabled = savedApiUrlEnabled;
     if (typeof savedApiKeyEnabled === 'boolean') state.apiKeyEnabled = savedApiKeyEnabled;
-    if (typeof savedSocketUrlEnabled === 'boolean') state.socketUrlEnabled = savedSocketUrlEnabled;
-    if (typeof savedCookieUrlEnabled === 'boolean') state.cookieUrlEnabled = savedCookieUrlEnabled;
 
     if (savedApiUrl) state.apiUrl = savedApiUrl;
     if (savedApiKey) state.apiKey = savedApiKey;
-    if (savedSocketUrl) state.socketUrl = savedSocketUrl;
-    if (savedSocketPath) state.socketPath = savedSocketPath;
-    if (savedCookieUrl) state.cookieUrl = savedCookieUrl;
-    if (savedCookieValue) state.cookieValue = savedCookieValue;
 
     if (savedMainLink) state.mainGroupLink = savedMainLink;
     if (savedMainId) state.mainGroupId = savedMainId;
@@ -1730,12 +1707,8 @@ if (SELF_URL) {
     }
   }
 
-  if (state.cookieUrlEnabled && state.cookieUrl) {
-    await syncCookieFromUrlIfEnabled();
-  }
-  initSocket();
   await bot.launch();
-  console.log('Bot @number_24_bot with Admin Panel is running...');
+  console.log('Bot with Admin Panel is running (Socket & Cookie removed)...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
