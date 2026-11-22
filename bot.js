@@ -475,7 +475,7 @@ function buildNumberCard(item, stripCC = false, otp = null) {
   const rows = [
     [
       {
-        text: `🟢 ${item.flag} 📋 ${shownPhone}`,
+        text: `📋 ${shownPhone}`,
         type: 'copy_text',
         copy_text: { text: shownPhone }
       }
@@ -493,7 +493,7 @@ function buildNumberCard(item, stripCC = false, otp = null) {
     [
       {
         text: '🌍 Change Country',
-        callback_data: `chg_cnt_${encodeURIComponent(serviceName)}`
+        callback_data: `pick_srv_${encodeURIComponent(serviceName)}`
       },
       {
         text: stripCC ? '🟢 Restore CC' : '🔴 Remove CC',
@@ -525,15 +525,60 @@ async function openServiceMenu(ctx, preferEdit = false) {
   const rows = [];
   for (let i = 0; i < serviceList.length; i += 2) {
     const s1 = serviceList[i];
-    const row = [{ text: `🟢 ${s1}`, callback_data: `get_srv_${encodeURIComponent(s1)}` }];
+    const row = [{ text: `✨ ${s1}`, callback_data: `pick_srv_${encodeURIComponent(s1)}` }];
     if (serviceList[i + 1]) {
       const s2 = serviceList[i + 1];
-      row.push({ text: `🔵 ${s2}`, callback_data: `get_srv_${encodeURIComponent(s2)}` });
+      row.push({ text: `✨ ${s2}`, callback_data: `pick_srv_${encodeURIComponent(s2)}` });
     }
     rows.push(row);
   }
 
-  return sendCleanBoard(ctx, '🟡 *Select a Service*', { inline_keyboard: rows }, preferEdit);
+  return sendCleanBoard(ctx, '📲 *Select a Service*', { inline_keyboard: rows }, preferEdit);
+}
+
+async function openCountryMenu(ctx, service, preferEdit = true) {
+  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
+  const ranges = await fetchActiveRanges();
+  const matched = ranges.filter(
+    (r) => String(r?.service || '').toLowerCase() === cleanService.toLowerCase()
+  );
+
+  const seenCountries = new Map();
+  for (const r of matched) {
+    const rawRange = String(r?.range || '').trim();
+    if (!rawRange) continue;
+    const cInfo = resolveCountryInfo(rawRange);
+    if (!seenCountries.has(cInfo.key)) {
+      seenCountries.set(cInfo.key, {
+        label: cInfo.label,
+        range: rawRange
+      });
+    }
+  }
+
+  const countryList = [...seenCountries.values()].slice(0, 12);
+  const rows = [
+    [{ text: '🌐 Auto Country', callback_data: `get_num_${encodeURIComponent(cleanService)}__auto` }]
+  ];
+
+  for (let i = 0; i < countryList.length; i += 2) {
+    const c1 = countryList[i];
+    const row = [
+      { text: c1.label, callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c1.range)}` }
+    ];
+    if (countryList[i + 1]) {
+      const c2 = countryList[i + 1];
+      row.push({
+        text: c2.label,
+        callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c2.range)}`
+      });
+    }
+    rows.push(row);
+  }
+
+  rows.push([{ text: '⬅️ Back to Services', callback_data: 'back_services' }]);
+
+  return sendCleanBoard(ctx, `🌍 *${cleanService} — Select Country:*`, { inline_keyboard: rows }, preferEdit);
 }
 
 async function renderAdminDashboard(ctx, preferEdit = false) {
@@ -666,6 +711,17 @@ bot.hears('🟢 GET NUMBER', async (ctx) => {
   await openServiceMenu(ctx, false);
 });
 
+bot.action(/^pick_srv_(.+)$/, async (ctx) => {
+  const service = decodeURIComponent(ctx.match[1] || 'Telegram');
+  await ctx.answerCbQuery();
+  await openCountryMenu(ctx, service, true);
+});
+
+bot.action('back_services', async (ctx) => {
+  await ctx.answerCbQuery();
+  await openServiceMenu(ctx, true);
+});
+
 async function handleNumberReq(ctx, service, range) {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const cleanRange = String(range || 'auto').trim() || 'auto';
@@ -694,68 +750,12 @@ async function handleNumberReq(ctx, service, range) {
   }
 }
 
-bot.action(/^get_srv_(.+)$/, async (ctx) => {
-  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), 'auto');
-});
-
-bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
-  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
-});
-
-bot.action(/^chg_cnt_(.+)$/, async (ctx) => {
-  const service = decodeURIComponent(ctx.match[1] || 'Telegram');
-  await ctx.answerCbQuery();
-
-  const ranges = await fetchActiveRanges();
-  const matched = ranges.filter(
-    (r) => String(r?.service || '').toLowerCase() === service.toLowerCase()
-  );
-
-  const seenCountries = new Map();
-  for (const r of matched) {
-    const rawRange = String(r?.range || '').trim();
-    if (!rawRange) continue;
-    const cInfo = resolveCountryInfo(rawRange);
-    if (!seenCountries.has(cInfo.key)) {
-      seenCountries.set(cInfo.key, {
-        label: cInfo.label,
-        range: rawRange
-      });
-    }
-  }
-
-  const countryList = [...seenCountries.values()].slice(0, 12);
-  const rows = [
-    [{ text: '🌍 Auto Country', callback_data: `get_num_${encodeURIComponent(service)}__auto` }]
-  ];
-
-  for (let i = 0; i < countryList.length; i += 2) {
-    const c1 = countryList[i];
-    const row = [
-      { text: c1.label, callback_data: `get_num_${encodeURIComponent(service)}__${encodeURIComponent(c1.range)}` }
-    ];
-    if (countryList[i + 1]) {
-      const c2 = countryList[i + 1];
-      row.push({
-        text: c2.label,
-        callback_data: `get_num_${encodeURIComponent(service)}__${encodeURIComponent(c2.range)}`
-      });
-    }
-    rows.push(row);
-  }
-
-  rows.push([{ text: '⬅️ Back to Services', callback_data: 'back_services' }]);
-
-  await sendCleanBoard(ctx, `🌍 *${service} — Select Country:*`, { inline_keyboard: rows }, true);
-});
-
 bot.action(/^get_num_(.+)__(.+)$/, async (ctx) => {
   await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
 });
 
-bot.action('back_services', async (ctx) => {
-  await ctx.answerCbQuery();
-  await openServiceMenu(ctx, true);
+bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
+  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
 });
 
 bot.action('cancel_num', async (ctx) => {
@@ -1058,7 +1058,7 @@ if (SELF_URL) {
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
   }
   await bot.launch();
-  console.log('Bot running with structured sections...');
+  console.log('Bot running with Service -> Country -> Number flow and clean buttons...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
