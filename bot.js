@@ -99,22 +99,15 @@ function attachCountryCode(rawNumber, dialCode = '') {
 }
 
 const state = {
-  // শুধু API URL ও API KEY এর ON / OFF ফ্ল্যাগ (Socket ও Cookie রিমুভ করা হয়েছে)
   apiUrlEnabled: false,
   apiKeyEnabled: false,
-
-  // API সেটআপ ভ্যালুসমূহ
   apiUrl: process.env.API_URL || DEFAULT_NXV_BASE,
   apiKey: process.env.API_KEY || '',
-
-  // গ্রুপ ও Join Check সেটিংস
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/your_main_group_link',
   mainGroupId: process.env.MAIN_GROUP_ID || '',
   otpGroupLink: process.env.OTP_GROUP_LINK || 'https://t.me/your_otp_group_link',
   otpGroupId: process.env.OTP_GROUP_ID || '',
   joinCheck: true,
-
-  // প্রতিটি এন্ট্রি: { id, service, countryKey, countryLabel, flag, dial, phone, source, orderId }
   numberEntries: [],
   users: [],
   otpsByPhone: {},
@@ -123,13 +116,10 @@ const state = {
     byCountry: {}
   },
   userSession: new Map(),
-
-  // স্টেট ট্র্যাকিং
   waitingSupportFrom: new Set(),
   adminWizard: new Map()
 };
 
-// Firebase Helpers
 async function dbGet(dbPath) {
   if (!FIREBASE_DB_URL) return null;
   try {
@@ -172,7 +162,6 @@ async function registerUser(userId) {
 async function turnAllOff() {
   state.apiUrlEnabled = false;
   state.apiKeyEnabled = false;
-
   await Promise.all([
     dbPut('config/apiUrlEnabled', false),
     dbPut('config/apiKeyEnabled', false)
@@ -216,6 +205,16 @@ function buildApiEndpoint(endpointPath, extraParams = {}) {
   return url.toString();
 }
 
+function getApiHeaders() {
+  const headers = {};
+  if (state.apiKeyEnabled && state.apiKey) {
+    const key = String(state.apiKey).trim();
+    headers['x-api-key'] = key;
+    headers['Authorization'] = `Bearer ${key}`;
+  }
+  return headers;
+}
+
 function extractOtpFromPayload(d) {
   if (!d) return null;
   if (typeof d === 'string') {
@@ -244,17 +243,28 @@ function extractOtpFromPayload(d) {
 }
 
 function extractNumberFromPayload(d) {
-  if (!d || typeof d !== 'object') return null;
+  if (!d) return null;
+  if (typeof d === 'string') {
+    const m = d.match(/\+?\d{8,15}/);
+    return m ? m[0] : null;
+  }
+  if (typeof d !== 'object') return null;
+
   const candidates = [
     d.number,
     d.phone,
     d.mobile,
+    d.msisdn,
     d.data?.number,
     d.data?.phone,
     d.data?.mobile,
+    d.data?.msisdn,
     d.result?.number,
-    d.result?.phone
+    d.result?.phone,
+    Array.isArray(d.data) ? (d.data[0]?.number || d.data[0]?.phone || d.data[0]) : null,
+    Array.isArray(d.numbers) ? (d.numbers[0]?.number || d.numbers[0]?.phone || d.numbers[0]) : null
   ];
+
   for (const val of candidates) {
     if (val !== undefined && val !== null && String(val).trim() !== '') {
       return String(val).trim();
@@ -268,6 +278,7 @@ function extractOrderIdFromPayload(d) {
   const candidates = [
     d.order_id,
     d.orderId,
+    d.activation_id,
     d.id,
     d.data?.order_id,
     d.data?.id
@@ -284,49 +295,39 @@ function isApiReady() {
   return Boolean(state.apiUrlEnabled && state.apiUrl);
 }
 
-// NXV / REST API থেকে OTP আনা
 async function fetchOtpViaApi(phone, orderId = '') {
   if (!isApiReady() || !phone) return null;
-
-  const headers = {};
-  if (state.apiKeyEnabled && state.apiKey) {
-    headers['x-api-key'] = String(state.apiKey).trim();
-    headers['Authorization'] = `Bearer ${String(state.apiKey).trim()}`;
-  }
-
   const endpoint = buildApiEndpoint('/get-otp', {
     action: 'getOtp',
     number: phone,
     phone,
     order_id: orderId
   });
-
-  const res = await axios.get(endpoint, { headers, timeout: 10000 });
+  console.log('[NXV GET-OTP URL]:', endpoint);
+  const res = await axios.get(endpoint, { headers: getApiHeaders(), timeout: 10000 });
+  console.log('[NXV GET-OTP RESP]:', JSON.stringify(res.data));
   return extractOtpFromPayload(res.data || {});
 }
 
-// NXV / REST API থেকে নতুন নম্বর আনা
 async function fetchNumberViaApi(service = '', countryKey = '') {
   if (!isApiReady()) return null;
-
-  const headers = {};
-  if (state.apiKeyEnabled && state.apiKey) {
-    headers['x-api-key'] = String(state.apiKey).trim();
-    headers['Authorization'] = `Bearer ${String(state.apiKey).trim()}`;
-  }
-
   const endpoint = buildApiEndpoint('/get-number', {
     action: 'getNumber',
     service,
     country: countryKey
   });
+  console.log('[NXV GET-NUMBER URL]:', endpoint);
+  const res = await axios.get(endpoint, { headers: getApiHeaders(), timeout: 10000 });
+  console.log('[NXV GET-NUMBER RESP]:', JSON.stringify(res.data));
 
-  const res = await axios.get(endpoint, { headers, timeout: 10000 });
   const data = res.data || {};
   const rawNum = extractNumberFromPayload(data);
   if (!rawNum) return null;
 
-  const formattedPhone = rawNum.startsWith('+') ? rawNum : `+${rawNum.replace(/[^\d]/g, '')}`;
+  const digits = rawNum.replace(/[^\d]/g, '');
+  if (digits.length < 6) return null;
+
+  const formattedPhone = `+${digits}`;
   const orderId = extractOrderIdFromPayload(data);
 
   return {
@@ -336,20 +337,14 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   };
 }
 
-// NXV / REST API ব্যালেন্স চেক
 async function fetchBalanceViaApi() {
   if (!isApiReady()) {
     return { ok: false, error: 'API URL বা API KEY সক্রিয় নেই।' };
   }
-
-  const headers = {};
-  if (state.apiKeyEnabled && state.apiKey) {
-    headers['x-api-key'] = String(state.apiKey).trim();
-    headers['Authorization'] = `Bearer ${String(state.apiKey).trim()}`;
-  }
-
-  const endpoint = buildApiEndpoint('/balance');
-  const res = await axios.get(endpoint, { headers, timeout: 10000 });
+  const endpoint = buildApiEndpoint('/balance', { action: 'getBalance' });
+  console.log('[NXV BALANCE URL]:', endpoint);
+  const res = await axios.get(endpoint, { headers: getApiHeaders(), timeout: 10000 });
+  console.log('[NXV BALANCE RESP]:', JSON.stringify(res.data));
   return { ok: true, data: res.data };
 }
 
@@ -611,7 +606,6 @@ async function finalizeAddedNumbers(ctx, service, rawCountry, rawNumbers, source
   await broadcastNewNumbers(service, countryInfo.label, addedCount, sourceLabel);
 }
 
-// গ্রুপ মেম্বারশিপ যাচাই
 async function isUserVerifiedInGroups(ctx) {
   if (!state.joinCheck) return true;
   const checks = [];
@@ -654,7 +648,6 @@ async function sendGroupVerifyPrompt(ctx) {
   );
 }
 
-// কালারড ইমোজিযুক্ত মেইন কিবোর্ড
 function getMainReplyKeyboard(isAdmin) {
   const rows = [
     ['🟢 GET NUMBER'],
@@ -673,7 +666,6 @@ function maskSecret(val) {
   return `${val.slice(0, 3)}***${val.slice(-3)}`;
 }
 
-// মেইন অ্যাডমিন প্যানেল (কালারড বাটনসহ)
 function getMainAdminPayload() {
   const text =
     `💠 *ADMIN PANEL*\n\n` +
@@ -708,9 +700,7 @@ function getMainAdminPayload() {
       Markup.button.callback('🟡 Check Balance', 'adm_check_balance'),
       Markup.button.callback('🟠 Group Setup', 'sub_group_menu')
     ],
-    [
-      Markup.button.callback('🔴 All OFF', 'all_off_btn')
-    ]
+    [Markup.button.callback('🔴 All OFF', 'all_off_btn')]
   ]);
 
   return { text, keyboard };
@@ -838,7 +828,6 @@ function getGroupSetupPayload() {
   return { text, keyboard };
 }
 
-// Auto Checker লুপ (API ON থাকলে NXV /get-otp থেকেও চেক করবে)
 setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
     if (!sess || !sess.autoChecker || sess.otpDelivered || !Array.isArray(sess.batchEntries)) {
@@ -850,7 +839,9 @@ setInterval(async () => {
         try {
           otp = await fetchOtpViaApi(item.phone, item.orderId || '');
           if (otp) await saveOtp(item.phone, otp);
-        } catch (_) {}
+        } catch (err) {
+          console.error('[NXV GET-OTP ERR]:', err.response?.data || err.message);
+        }
       }
       if (otp) {
         sess.otpDelivered = true;
@@ -872,7 +863,6 @@ setInterval(async () => {
   }
 }, 5000);
 
-// /start
 bot.start(async (ctx) => {
   await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
@@ -934,15 +924,18 @@ bot.action('adm_check_balance', async (ctx) => {
       return ctx.reply(`⚠️ ${res.error}`);
     }
     await ctx.reply(
-      `🟡 *API BALANCE RESPONSE:*\n\`${JSON.stringify(res.data, null, 2)}\``,
+      `🟡 *API BALANCE RESPONSE:*\n\`${JSON.stringify(res.data, null, 2).slice(0, 1500)}\``,
       { parse_mode: 'Markdown' }
     );
   } catch (err) {
-    await ctx.reply(`❌ ব্যালেন্স চেক ব্যর্থ: \`${err.message}\``, { parse_mode: 'Markdown' });
+    console.error('[NXV BALANCE ERR]:', err.response?.data || err.message);
+    const detail = err.response?.data
+      ? JSON.stringify(err.response.data).slice(0, 500)
+      : err.message;
+    await ctx.reply(`❌ ব্যালেন্স চেক ব্যর্থ: \`${detail}\``, { parse_mode: 'Markdown' });
   }
 });
 
-// নির্দিষ্ট একটি দেশের নম্বর ডিলিট করা
 bot.action(/^del_cnt_(.+)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) {
     return ctx.answerCbQuery('শুধুমাত্র অ্যাডমিন ব্যবহার করতে পারবেন।', { show_alert: true });
@@ -966,7 +959,6 @@ bot.action(/^del_cnt_(.+)$/, async (ctx) => {
   );
 });
 
-// API URL ও API KEY এর আলাদা ON / OFF টগল বাটন
 bot.action('tgl_api_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiUrlEnabled = !state.apiUrlEnabled;
@@ -1241,6 +1233,7 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
   let picked = [];
   let countryLabel = resolveCountryInfo(countryKey).label;
   let flag = resolveCountryInfo(countryLabel).flag;
+  let apiErrorReason = '';
   let offset =
     typeof existingSess.offset === 'number' &&
     existingSess.service === service &&
@@ -1300,14 +1293,21 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
               orderId: apiNum.orderId || null
             }
           ];
+        } else {
+          apiErrorReason = 'API থেকে নম্বর ফিল্ড খালি এসেছে।';
         }
-      } catch (_) {}
+      } catch (err) {
+        console.error('[NXV GET-NUMBER ERR]:', err.response?.data || err.message);
+        const status = err.response?.status ? `HTTP ${err.response.status}` : '';
+        apiErrorReason = `${status} ${err.message}`.trim();
+      }
     }
   }
 
   if (!picked.length) {
+    const reasonText = apiErrorReason ? `\n🔍 কারণ: \`${apiErrorReason}\`` : '';
     return {
-      text: `⚠️ *${service}* (${countryKey}) এর কোনো নম্বর পাওয়া যায়নি।`,
+      text: `⚠️ *${service}* (${countryKey}) এর কোনো নম্বর পাওয়া যায়নি।${reasonText}`,
       keyboard: Markup.inlineKeyboard([
         [Markup.button.callback('🔵 Change Country', `chg_cnt_${encodeURIComponent(service)}`)],
         [Markup.button.callback('🟣 Back to Service', 'back_srv_list')]
@@ -1324,7 +1324,9 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       try {
         savedOtp = await fetchOtpViaApi(item.phone, item.orderId || '');
         if (savedOtp) await saveOtp(item.phone, savedOtp);
-      } catch (_) {}
+      } catch (err) {
+        console.error('[NXV GET-OTP ERR]:', err.response?.data || err.message);
+      }
     }
     if (savedOtp) {
       anyOtpFound = true;
