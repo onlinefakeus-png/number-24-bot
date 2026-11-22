@@ -10,16 +10,7 @@ const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
 const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
 const DEFAULT_NXV_BASE = 'https://nxv-sms.vercel.app';
-const FALLBACK_SERVICES = [
-  'WhatsApp',
-  'Telegram',
-  'Instagram',
-  'Facebook',
-  'Google',
-  'TikTok',
-  'Twitter',
-  'Discord'
-];
+const DEFAULT_API_KEY = process.env.API_KEY || 'nxv_live_mwr98oy3_ypnnxbi7zjowac7m';
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
@@ -70,6 +61,7 @@ function resolveCountryInfo(rawCountry) {
   const extractedFlag = flagMatch ? flagMatch[0] : null;
   const cleanedName = raw
     .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
+    .replace(/\(\+?\d+\)/g, '')
     .replace(/\([A-Z]{2,3}\)/gi, '')
     .trim();
 
@@ -80,6 +72,7 @@ function resolveCountryInfo(rawCountry) {
     const label = `${matched.flag} ${matched.name} (${matched.iso})`;
     return {
       key: matched.name.toLowerCase(),
+      name: matched.name,
       label,
       flag: matched.flag,
       dial: matched.dial,
@@ -96,6 +89,7 @@ function resolveCountryInfo(rawCountry) {
 
   return {
     key: displayName.toLowerCase(),
+    name: displayName,
     label,
     flag: fallbackFlag,
     dial: '',
@@ -121,7 +115,7 @@ const state = {
   apiUrlEnabled: false,
   apiKeyEnabled: false,
   apiUrl: process.env.API_URL || DEFAULT_NXV_BASE,
-  apiKey: process.env.API_KEY || '',
+  apiKey: DEFAULT_API_KEY,
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/your_main_group_link',
   mainGroupId: process.env.MAIN_GROUP_ID || '',
   otpGroupLink: process.env.OTP_GROUP_LINK || 'https://t.me/your_otp_group_link',
@@ -134,7 +128,6 @@ const state = {
     total: 0,
     byCountry: {}
   },
-  knownPanelStockSnapshot: {},
   userSession: new Map(),
   lastBotBoardMsg: new Map(),
   lastGetNumberUserMsg: new Map(),
@@ -327,14 +320,27 @@ function getNormalizedBaseUrl() {
   return raw;
 }
 
+function getEffectiveApiKey() {
+  return String(state.apiKey || DEFAULT_API_KEY || '').trim();
+}
+
+function getApiRequestHeaders() {
+  const key = getEffectiveApiKey();
+  if (state.apiKeyEnabled && key) {
+    return { 'x-api-key': key };
+  }
+  return {};
+}
+
 function buildApiEndpoint(endpointPath, extraParams = {}) {
   const base = getNormalizedBaseUrl();
   const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
   const url = new URL(`${base}${cleanPath}`);
 
   const params = { ...extraParams };
-  if (state.apiKeyEnabled && state.apiKey && !params.api_key) {
-    params.api_key = String(state.apiKey).trim();
+  const key = getEffectiveApiKey();
+  if (state.apiKeyEnabled && key && !params.api_key) {
+    params.api_key = key;
   }
 
   Object.entries(params).forEach(([k, v]) => {
@@ -344,6 +350,14 @@ function buildApiEndpoint(endpointPath, extraParams = {}) {
   });
 
   return url.toString();
+}
+
+async function apiGet(endpointPath, extraParams = {}, timeout = 10000) {
+  const endpoint = buildApiEndpoint(endpointPath, extraParams);
+  return axios.get(endpoint, {
+    timeout,
+    headers: getApiRequestHeaders()
+  });
 }
 
 function normalizeServiceTitle(rawSrv) {
@@ -405,8 +419,7 @@ async function fetchPanelServices() {
   const candidatePaths = ['/get-services', '/services'];
   for (const path of candidatePaths) {
     try {
-      const endpoint = buildApiEndpoint(path);
-      const res = await axios.get(endpoint, { timeout: 6000 });
+      const res = await apiGet(path, {}, 6000);
       const parsed = parseServicesFromResponse(res.data);
       if (parsed.length) {
         state.cachedApiServices = { list: parsed, ts: Date.now() };
@@ -513,8 +526,7 @@ async function fetchPanelRangeEntries(service = '') {
   const candidatePaths = ['/active-rangre', '/active-range', '/ranges', '/get-countries'];
   for (const path of candidatePaths) {
     try {
-      const endpoint = buildApiEndpoint(path, service ? { service } : {});
-      const res = await axios.get(endpoint, { timeout: 6000 });
+      const res = await apiGet(path, service ? { service } : {}, 6000);
       const parsed = parseRangeEntriesFromPayload(res.data, service || 'General');
       if (parsed.length) {
         state.cachedApiRanges = { key: cacheKey, list: parsed, ts: Date.now() };
@@ -563,12 +575,8 @@ function extractOtpFromPayload(d) {
 }
 
 function extractNumberFromPayload(d) {
-  if (!d) return null;
-  if (typeof d === 'string') {
-    const m = d.match(/\+?\d{6,15}/);
-    return m ? m[0] : null;
-  }
-  if (typeof d !== 'object') return null;
+  if (!d || typeof d !== 'object') return null;
+  if (d.success === false) return null;
 
   const candidates = [
     d.phoneNumber,
@@ -585,10 +593,10 @@ function extractNumberFromPayload(d) {
     d.result?.number,
     d.result?.phone,
     Array.isArray(d.data)
-      ? (d.data[0]?.phoneNumber || d.data[0]?.number || d.data[0]?.phone || d.data[0])
+      ? (d.data[0]?.phoneNumber || d.data[0]?.number || d.data[0]?.phone || null)
       : null,
     Array.isArray(d.numbers)
-      ? (d.numbers[0]?.phoneNumber || d.numbers[0]?.number || d.numbers[0]?.phone || d.numbers[0])
+      ? (d.numbers[0]?.phoneNumber || d.numbers[0]?.number || d.numbers[0]?.phone || null)
       : null
   ];
 
@@ -619,20 +627,31 @@ function extractOrderIdFromPayload(d) {
   return null;
 }
 
+function extractCountryFromPayload(d) {
+  if (!d || typeof d !== 'object') return null;
+  const val =
+    d.country ||
+    d.country_name ||
+    d.countryName ||
+    d.data?.country ||
+    d.data?.country_name ||
+    null;
+  return val ? String(val).trim() : null;
+}
+
 function isApiReady() {
   return Boolean(state.apiUrlEnabled && state.apiUrl);
 }
 
 async function fetchOtpViaApi(phone, orderId = '') {
   if (!isApiReady() || (!phone && !orderId)) return null;
-  const endpoint = buildApiEndpoint('/get-otp', {
+  const res = await apiGet('/get-otp', {
     orderId,
     order_id: orderId,
+    phoneNumber: phone,
     number: phone,
     phone
-  });
-  console.log('[NXV GET-OTP URL]:', endpoint);
-  const res = await axios.get(endpoint, { timeout: 10000 });
+  }, 10000);
   console.log('[NXV GET-OTP RESP]:', JSON.stringify(res.data));
   return extractOtpFromPayload(res.data || {});
 }
@@ -641,17 +660,16 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   if (!isApiReady()) return null;
   const countryMeta = resolveCountryInfo(countryKey);
   const params = {
-    service: service && service !== 'NXV Auto' ? service : 'WhatsApp'
+    service: service && service !== 'NXV Auto' ? service : 'Telegram'
   };
   if (countryKey && countryKey !== 'api_auto' && countryKey !== 'all') {
-    params.country = countryKey;
+    params.country = countryMeta.name || countryKey;
+    params.country_name = countryMeta.name || countryKey;
     if (countryMeta.iso) params.country_code = countryMeta.iso;
     if (countryMeta.dial) params.dial_code = countryMeta.dial;
   }
 
-  const endpoint = buildApiEndpoint('/get-number', params);
-  console.log('[NXV GET-NUMBER URL]:', endpoint);
-  const res = await axios.get(endpoint, { timeout: 10000 });
+  const res = await apiGet('/get-number', params, 10000);
   console.log('[NXV GET-NUMBER RESP]:', JSON.stringify(res.data));
 
   const data = res.data || {};
@@ -659,38 +677,40 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   if (!rawNum) return null;
 
   const digits = rawNum.replace(/[^\d]/g, '');
-  if (digits.length < 6) return null;
+  if (digits.length < 6 || digits.length > 15) return null;
 
   const formattedPhone = `+${digits}`;
   const orderId = extractOrderIdFromPayload(data);
+  const apiCountry = extractCountryFromPayload(data);
 
   return {
     phone: formattedPhone,
     orderId,
+    apiCountry,
     raw: data
   };
 }
 
-function matchesExpectedCountry(phone, expectedCountryKey = '') {
-  const digits = String(phone || '').replace(/[^\d]/g, '');
-  if (digits.length < 6) return false;
-  if (!expectedCountryKey || expectedCountryKey === 'api_auto' || expectedCountryKey === 'all') {
-    return true;
+async function cancelNumberViaApi(phone = '', orderId = '') {
+  if (!isApiReady()) {
+    return { ok: false, message: 'API সক্রিয় নেই।' };
   }
-
-  const expectedMeta = resolveCountryInfo(expectedCountryKey);
-  if (!expectedMeta.dial) return true;
-
-  return digits.startsWith(expectedMeta.dial);
+  const res = await apiGet('/cancel-number', {
+    orderId,
+    order_id: orderId,
+    phoneNumber: phone,
+    number: phone,
+    phone
+  }, 10000);
+  console.log('[NXV CANCEL-NUMBER RESP]:', JSON.stringify(res.data));
+  return { ok: true, data: res.data };
 }
 
 async function fetchBalanceViaApi() {
   if (!isApiReady()) {
     return { ok: false, error: 'API URL বা API KEY সক্রিয় নেই।' };
   }
-  const endpoint = buildApiEndpoint('/balance');
-  console.log('[NXV BALANCE URL]:', endpoint);
-  const res = await axios.get(endpoint, { timeout: 10000 });
+  const res = await apiGet('/balance', {}, 10000);
   console.log('[NXV BALANCE RESP]:', JSON.stringify(res.data));
   return { ok: true, data: res.data };
 }
@@ -895,40 +915,6 @@ async function broadcastNewNumbers(service, countryLabel, addedCount, sourceLabe
       await rawSendMessage(uid, userMsg);
     } catch (_) {}
   }
-}
-
-async function checkPanelNewNumbersAndNotify() {
-  if (!isApiReady() || !state.users.length) return;
-  try {
-    const entries = await fetchPanelRangeEntries('');
-    if (!entries.length) return;
-
-    const currentSnapshot = {};
-    for (const item of entries) {
-      const k = `${item.service.toLowerCase()}__${item.countryKey}`;
-      currentSnapshot[k] = {
-        service: item.service,
-        countryLabel: item.countryLabel,
-        count: (currentSnapshot[k]?.count || 0) + (Number(item.count) || 0)
-      };
-    }
-
-    const prevSnapshot = state.knownPanelStockSnapshot || {};
-    const hasPrev = Object.keys(prevSnapshot).length > 0;
-
-    if (hasPrev) {
-      for (const [k, cur] of Object.entries(currentSnapshot)) {
-        const prevCount = Number(prevSnapshot[k]?.count) || 0;
-        const curCount = Number(cur.count) || 0;
-        if (curCount > prevCount) {
-          const diff = curCount - prevCount;
-          await broadcastNewNumbers(cur.service, cur.countryLabel, diff, 'API Panel');
-        }
-      }
-    }
-
-    state.knownPanelStockSnapshot = currentSnapshot;
-  } catch (_) {}
 }
 
 async function finalizeAddedNumbers(ctx, service, rawCountry, rawNumbers, sourceLabel) {
@@ -1252,10 +1238,6 @@ setInterval(async () => {
   }
 }, 4000);
 
-setInterval(async () => {
-  await checkPanelNewNumbersAndNotify();
-}, 25000);
-
 bot.start(async (ctx) => {
   await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
@@ -1479,7 +1461,7 @@ async function showServiceSelection(ctx, isEdit = false) {
   }
 
   const serviceList = isApiReady()
-    ? [...new Set([...panelServices, ...stockServices, ...(panelServices.length ? [] : FALLBACK_SERVICES)])]
+    ? [...new Set([...panelServices, ...stockServices, 'Telegram', 'WhatsApp', 'Facebook'])]
     : stockServices;
 
   const rows = [];
@@ -1677,34 +1659,32 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     } else {
       try {
         const apiNum = await fetchNumberViaApi(service, countryKey === 'api_auto' ? '' : countryKey);
-        if (apiNum?.phone && matchesExpectedCountry(apiNum.phone, countryKey)) {
+        if (apiNum?.phone) {
           const detected = detectCountryForPhone(apiNum.phone);
-          const useDetected =
-            countryKey === 'api_auto' ||
-            !requestedMeta.dial ||
-            detected.key === requestedMeta.key;
-          countryLabel = useDetected && detected.key !== 'unknown'
-            ? detected.label
-            : requestedMeta.label;
-          flag =
-            countryLabel.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] ||
-            requestedMeta.flag ||
-            '🌍';
+          const apiCountryInfo = apiNum.apiCountry
+            ? resolveCountryInfo(apiNum.apiCountry)
+            : null;
+          const resolvedInfo =
+            apiCountryInfo && apiCountryInfo.key !== 'unknown'
+              ? apiCountryInfo
+              : detected.key !== 'unknown'
+                ? detected
+                : requestedMeta;
+
+          countryLabel = resolvedInfo.label;
+          flag = resolvedInfo.flag || '🌍';
           picked = [
             {
               service,
-              countryKey: useDetected && detected.key !== 'unknown' ? detected.key : requestedMeta.key,
+              countryKey: resolvedInfo.key,
               countryLabel,
               flag,
-              dial: detected.dial || requestedMeta.dial || '',
+              dial: resolvedInfo.dial || detected.dial || '',
               phone: apiNum.phone,
               source: 'api',
               orderId: apiNum.orderId || null
             }
           ];
-        } else if (apiNum?.phone) {
-          const realCountry = detectCountryForPhone(apiNum.phone);
-          noNumberMsg = `${requestedMeta.label} এর জন্য প্যানেলে নম্বর পাওয়া যায়নি (প্যানেল ${realCountry.label} এর নম্বর দিয়েছে)।`;
         } else {
           noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
         }
@@ -1713,6 +1693,8 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
         noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
       }
     }
+  } else {
+    noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
   }
 
   if (!picked.length) {
@@ -1780,7 +1762,8 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       '🔄 Change Number',
       `chg_num_${encodeURIComponent(service)}__${encodeURIComponent(countryKey)}`,
       'primary'
-    )
+    ),
+    inlineCbButton('🚫 Cancel Number', 'cancel_active_number', 'danger')
   ]);
 
   keyboardRows.push([
@@ -1808,6 +1791,31 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
   };
 }
 
+bot.action('cancel_active_number', async (ctx) => {
+  const sess = state.userSession.get(ctx.from.id);
+  if (!sess || !Array.isArray(sess.batchEntries) || !sess.batchEntries.length) {
+    return ctx.answerCbQuery('বাতিল করার মতো কোনো সক্রিয় নম্বর নেই।', { show_alert: true });
+  }
+
+  const firstItem = sess.batchEntries[0];
+  await ctx.answerCbQuery('নম্বর বাতিল করা হচ্ছে...');
+
+  if (firstItem.source === 'api' && isApiReady()) {
+    try {
+      await cancelNumberViaApi(firstItem.phone, firstItem.orderId || '');
+    } catch (err) {
+      console.error('[NXV CANCEL-NUMBER ERR]:', err.response?.data || err.message);
+    }
+  }
+
+  state.userSession.delete(ctx.from.id);
+  await sendCleanBoard(ctx, `🚫 নম্বর \`${firstItem.phone}\` বাতিল করা হয়েছে।`, {
+    reply_markup: buildInlineMarkup([
+      [inlineCbButton('🟢 নতুন নম্বর নিন', `pick_srv_${encodeURIComponent(sess.service)}`, 'success')]
+    ])
+  });
+});
+
 bot.action(/^pick_cnt_(.+)__(.+)$/, async (ctx) => {
   const service = decodeURIComponent(ctx.match[1]);
   const countryKey = decodeURIComponent(ctx.match[2]);
@@ -1822,8 +1830,8 @@ bot.action(/^pick_cnt_(.+)__(.+)$/, async (ctx) => {
 
 bot.action(/^copy_num_(.+)$/, async (ctx) => {
   const phone = decodeURIComponent(ctx.match[1]);
-  await ctx.answerCbQuery(`নম্বর: ${phone}`, { show_alert: false });
-  await rawSendMessage(ctx.chat.id, `📋 নম্বর: \`${phone}\``);
+  await ctx.answerCbQuery('নম্বর কপি করার জন্য নিচে দেখুন');
+  await rawSendMessage(ctx.chat.id, `\`${phone}\``);
 });
 
 bot.action('toggle_remove_cc', async (ctx) => {
