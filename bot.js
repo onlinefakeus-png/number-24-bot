@@ -268,11 +268,17 @@ async function sendCleanBoard(ctx, text, reply_markup = null, preferEdit = false
 
 function getMainKeyboard(isAdmin) {
   const rows = [
-    [{ text: '🟢 GET NUMBER' }],
-    [{ text: '🟣 WALLET' }, { text: '🔵 TRAFFIC' }],
-    [{ text: '🩷 SUPPORT' }, { text: '🟡 NUMBER FILE' }]
+    [{ text: '🟢 GET NUMBER', style: 'danger' }],
+    [
+      { text: '🟣 WALLET', style: 'success' },
+      { text: '🔵 TRAFFIC', style: 'primary' }
+    ],
+    [
+      { text: '🩷 SUPPORT', style: 'primary' },
+      { text: '🟡 NUMBER FILE', style: 'danger' }
+    ]
   ];
-  if (isAdmin) rows.push([{ text: '💠 ADMIN PANEL' }]);
+  if (isAdmin) rows.push([{ text: '💠 ADMIN PANEL', style: 'primary' }]);
   return { keyboard: rows, resize_keyboard: true };
 }
 
@@ -340,11 +346,11 @@ async function sendJoinGateBoard(ctx, missingMain = true, missingOtp = true, pre
   const rows = [];
   if (hasValidGroupLinks()) {
     rows.push([
-      { text: '📢 Main Group', url: state.mainGroupLink },
-      { text: '📩 OTP Group', url: state.otpGroupLink }
+      { text: '📢 Main Group', url: state.mainGroupLink, style: 'primary' },
+      { text: '📩 OTP Group', url: state.otpGroupLink, style: 'primary' }
     ]);
   }
-  rows.push([{ text: '✅ Verify', callback_data: 'verify_groups' }]);
+  rows.push([{ text: '✅ Verify', callback_data: 'verify_groups', style: 'success' }]);
 
   const text =
     `🔒 *গ্রুপ ভেরিফিকেশন প্রয়োজন*\n\n` +
@@ -445,17 +451,6 @@ async function requestOtpFromPanel(orderId, phone) {
   return null;
 }
 
-async function cancelNumberOnPanel(orderId, phone) {
-  if (!isApiReady() || (!orderId && !phone)) return null;
-  const params = {};
-  if (orderId) params.orderId = orderId;
-  if (phone) params.phoneNumber = phone;
-
-  const res = await callPanel(PANEL_URLS.cancelNumber, params, 10000);
-  console.log('[CANCEL-NUMBER RESP]:', JSON.stringify(res.data));
-  return res.data;
-}
-
 async function recordTraffic(phone) {
   const info = resolveCountryInfo(phone);
   const cur = state.otpStats.byCountry[info.key] || { label: info.label, count: 0 };
@@ -484,29 +479,34 @@ function buildNumberCard(sess, otp = null) {
       {
         text: `${item.flag} 📋 ${shownPhone}`,
         type: 'copy_text',
-        copy_text: { text: shownPhone }
+        copy_text: { text: shownPhone },
+        style: 'success'
       }
     ],
     [
       {
         text: sess.autoChecker !== false ? '🟢 Auto Checker On' : '⏸️ Auto Checker Off',
-        callback_data: 'toggle_auto_chk'
+        callback_data: 'toggle_auto_chk',
+        style: sess.autoChecker !== false ? 'success' : 'primary'
       },
       {
         text: sess.stripCC ? '🟢 Restore CC' : '❌ Remove CC',
-        callback_data: 'toggle_cc'
+        callback_data: 'toggle_cc',
+        style: 'danger'
       }
     ],
     [
       {
         text: '🔄 Change Number',
-        callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`
+        callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`,
+        style: 'danger'
       }
     ],
     [
       {
         text: '🌐 Change Country',
-        callback_data: `pick_srv_${encodeURIComponent(serviceName)}`
+        callback_data: `pick_srv_${encodeURIComponent(serviceName)}`,
+        style: 'primary'
       }
     ]
   ];
@@ -534,10 +534,10 @@ async function openServiceMenu(ctx, preferEdit = false) {
   const rows = [];
   for (let i = 0; i < serviceList.length; i += 2) {
     const s1 = serviceList[i];
-    const row = [{ text: `✨ ${s1}`, callback_data: `pick_srv_${encodeURIComponent(s1)}` }];
+    const row = [{ text: `✨ ${s1}`, callback_data: `pick_srv_${encodeURIComponent(s1)}`, style: 'primary' }];
     if (serviceList[i + 1]) {
       const s2 = serviceList[i + 1];
-      row.push({ text: `✨ ${s2}`, callback_data: `pick_srv_${encodeURIComponent(s2)}` });
+      row.push({ text: `✨ ${s2}`, callback_data: `pick_srv_${encodeURIComponent(s2)}`, style: 'primary' });
     }
     rows.push(row);
   }
@@ -567,25 +567,26 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
 
   const countryList = [...seenCountries.values()].slice(0, 12);
   const rows = [
-    [{ text: '🌐 Auto Country', callback_data: `get_num_${encodeURIComponent(cleanService)}__auto` }]
+    [{ text: '🌐 Auto Country', callback_data: `get_num_${encodeURIComponent(cleanService)}__auto`, style: 'success' }]
   ];
 
   for (let i = 0; i < countryList.length; i += 2) {
     const c1 = countryList[i];
     const row = [
-      { text: c1.label, callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c1.range)}` }
+      { text: c1.label, callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c1.range)}`, style: 'primary' }
     ];
     if (countryList[i + 1]) {
       const c2 = countryList[i + 1];
       row.push({
         text: c2.label,
-        callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c2.range)}`
+        callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c2.range)}`,
+        style: 'primary'
       });
     }
     rows.push(row);
   }
 
-  rows.push([{ text: '⬅️ Back to Services', callback_data: 'back_services' }]);
+  rows.push([{ text: '⬅️ Back to Services', callback_data: 'back_services', style: 'danger' }]);
 
   return sendCleanBoard(ctx, `🌍 *${cleanService} — Select Country:*`, { inline_keyboard: rows }, preferEdit);
 }
@@ -613,20 +614,20 @@ async function renderAdminDashboard(ctx, preferEdit = false) {
   const markup = {
     inline_keyboard: [
       [
-        { text: '🔑 Set API Key', callback_data: 'adm_set_key' },
-        { text: state.apiEnabled ? '🟢 API ON' : '🔴 API OFF', callback_data: 'adm_tgl_api' }
+        { text: '🔑 Set API Key', callback_data: 'adm_set_key', style: 'primary' },
+        { text: state.apiEnabled ? '🟢 API ON' : '🔴 API OFF', callback_data: 'adm_tgl_api', style: state.apiEnabled ? 'success' : 'danger' }
       ],
       [
-        { text: '📢 Set Main Group', callback_data: 'adm_set_main_grp' },
-        { text: '📩 Set OTP Group', callback_data: 'adm_set_otp_grp' }
+        { text: '📢 Set Main Group', callback_data: 'adm_set_main_grp', style: 'primary' },
+        { text: '📩 Set OTP Group', callback_data: 'adm_set_otp_grp', style: 'primary' }
       ],
       [
-        { text: state.joinCheckEnabled ? '🔒 Join Gate ON' : '🔓 Join Gate OFF', callback_data: 'adm_tgl_join' },
-        { text: '📣 Broadcast', callback_data: 'adm_bcast' }
+        { text: state.joinCheckEnabled ? '🔒 Join Gate ON' : '🔓 Join Gate OFF', callback_data: 'adm_tgl_join', style: state.joinCheckEnabled ? 'success' : 'danger' },
+        { text: '📣 Broadcast', callback_data: 'adm_bcast', style: 'primary' }
       ],
       [
-        { text: '🧪 Test /balance', callback_data: 'adm_test_bal' },
-        { text: '📡 Test /active-rangre', callback_data: 'adm_test_rng' }
+        { text: '🧪 Test /balance', callback_data: 'adm_test_bal', style: 'success' },
+        { text: '📡 Test /active-rangre', callback_data: 'adm_test_rng', style: 'success' }
       ],
       [
         { text: '🔗 API Endpoints', callback_data: 'adm_endpoints' },
@@ -866,7 +867,7 @@ bot.action('adm_set_key', async (ctx) => {
   state.adminWizard.set(ctx.from.id, 'key');
   await ctx.answerCbQuery();
   await sendCleanBoard(ctx, '🔑 নতুন API Token পাঠান:', {
-    inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back' }]]
+    inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]]
   }, true);
 });
 
@@ -877,7 +878,7 @@ bot.action('adm_set_main_grp', async (ctx) => {
   await sendCleanBoard(
     ctx,
     '📢 Main Group লিংক পাঠান (চাইলে স্পেস দিয়ে Chat ID ও দিতে পারেন, যেমন `https://t.me/group -100123456`):',
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back' }]] },
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]] },
     true
   );
 });
@@ -889,7 +890,7 @@ bot.action('adm_set_otp_grp', async (ctx) => {
   await sendCleanBoard(
     ctx,
     '📩 OTP Group লিংক পাঠান (চাইলে স্পেস দিয়ে Chat ID ও দিতে পারেন, যেমন `https://t.me/group -100123456`):',
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back' }]] },
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]] },
     true
   );
 });
@@ -899,7 +900,7 @@ bot.action('adm_bcast', async (ctx) => {
   state.adminWizard.set(ctx.from.id, 'bcast');
   await ctx.answerCbQuery();
   await sendCleanBoard(ctx, '📣 সব ইউজারকে পাঠানোর মেসেজ লিখুন:', {
-    inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back' }]]
+    inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]]
   }, true);
 });
 
@@ -911,7 +912,7 @@ bot.action('adm_test_bal', async (ctx) => {
   await sendCleanBoard(
     ctx,
     `🧪 *TERMINAL: GET /balance*\n\n\`\`\`json\n${preview}\n\`\`\``,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back' }]] },
+    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
     true
   );
 });
@@ -925,7 +926,7 @@ bot.action('adm_test_rng', async (ctx) => {
   await sendCleanBoard(
     ctx,
     `📡 *TERMINAL: GET /active-rangre*\nTotal Ranges: *${list.length}*\n\n\`\`\`json\n${preview}\n\`\`\``,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back' }]] },
+    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
     true
   );
 });
@@ -944,7 +945,7 @@ bot.action('adm_endpoints', async (ctx) => {
   await sendCleanBoard(
     ctx,
     text,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back' }]] },
+    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
     true
   );
 });
@@ -963,8 +964,8 @@ bot.action('adm_community', async (ctx) => {
     text,
     {
       inline_keyboard: [
-        [{ text: '📢 Official Channel', url: 'https://t.me/nhbdofficial' }],
-        [{ text: '⬅️ Back to Panel', callback_data: 'adm_back' }]
+        [{ text: '📢 Official Channel', url: 'https://t.me/nhbdofficial', style: 'primary' }],
+        [{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]
       ]
     },
     true
@@ -1066,7 +1067,7 @@ if (SELF_URL) {
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
   }
   await bot.launch();
-  console.log('Bot running with full country names and 2nd-image card buttons...');
+  console.log('Bot running with Telegram-supported button styles (success, danger, primary, default)...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
