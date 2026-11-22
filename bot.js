@@ -671,9 +671,17 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   };
 }
 
-function matchesExpectedCountry(phone) {
+function matchesExpectedCountry(phone, expectedCountryKey = '') {
   const digits = String(phone || '').replace(/[^\d]/g, '');
-  return digits.length >= 6;
+  if (digits.length < 6) return false;
+  if (!expectedCountryKey || expectedCountryKey === 'api_auto' || expectedCountryKey === 'all') {
+    return true;
+  }
+
+  const expectedMeta = resolveCountryInfo(expectedCountryKey);
+  if (!expectedMeta.dial) return true;
+
+  return digits.startsWith(expectedMeta.dial);
 }
 
 async function fetchBalanceViaApi() {
@@ -1669,12 +1677,15 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     } else {
       try {
         const apiNum = await fetchNumberViaApi(service, countryKey === 'api_auto' ? '' : countryKey);
-        if (apiNum?.phone && matchesExpectedCountry(apiNum.phone)) {
-          const cInfo = detectCountryForPhone(apiNum.phone);
-          countryLabel =
-            countryKey !== 'api_auto' && requestedMeta.label
-              ? requestedMeta.label
-              : cInfo.label;
+        if (apiNum?.phone && matchesExpectedCountry(apiNum.phone, countryKey)) {
+          const detected = detectCountryForPhone(apiNum.phone);
+          const useDetected =
+            countryKey === 'api_auto' ||
+            !requestedMeta.dial ||
+            detected.key === requestedMeta.key;
+          countryLabel = useDetected && detected.key !== 'unknown'
+            ? detected.label
+            : requestedMeta.label;
           flag =
             countryLabel.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] ||
             requestedMeta.flag ||
@@ -1682,15 +1693,18 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
           picked = [
             {
               service,
-              countryKey: countryKey !== 'api_auto' ? requestedMeta.key : cInfo.key,
+              countryKey: useDetected && detected.key !== 'unknown' ? detected.key : requestedMeta.key,
               countryLabel,
               flag,
-              dial: cInfo.dial || requestedMeta.dial || '',
+              dial: detected.dial || requestedMeta.dial || '',
               phone: apiNum.phone,
               source: 'api',
               orderId: apiNum.orderId || null
             }
           ];
+        } else if (apiNum?.phone) {
+          const realCountry = detectCountryForPhone(apiNum.phone);
+          noNumberMsg = `${requestedMeta.label} এর জন্য প্যানেলে নম্বর পাওয়া যায়নি (প্যানেল ${realCountry.label} এর নম্বর দিয়েছে)।`;
         } else {
           noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
         }
