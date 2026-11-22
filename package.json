@@ -1,14 +1,16 @@
 {
   "name": "number-24-bot",
   "version": "1.0.0",
+  "description": "Telegram OTP Bot with NXV SMS API and Manual Stock",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
-    "node-telegram-bot-api": "^0.66.0",
-    "socket.io-client": "^4.8.1",
     "axios": "^1.7.9"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
