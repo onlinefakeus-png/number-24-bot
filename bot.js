@@ -31,17 +31,22 @@ const bot = new Telegraf(BOT_TOKEN);
 const COUNTRY_META = [
   { name: 'Afghanistan', iso: 'AF', dial: '93', flag: '🇦🇫' },
   { name: 'Argentina', iso: 'AR', dial: '54', flag: '🇦🇷' },
+  { name: 'Armenia', iso: 'AM', dial: '374', flag: '🇦🇲' },
   { name: 'Bangladesh', iso: 'BD', dial: '880', flag: '🇧🇩' },
   { name: 'Brazil', iso: 'BR', dial: '55', flag: '🇧🇷' },
   { name: 'Cambodia', iso: 'KH', dial: '855', flag: '🇰🇭' },
   { name: 'Canada', iso: 'CA', dial: '1', flag: '🇨🇦' },
+  { name: "Côte d'Ivoire", iso: 'CI', dial: '225', flag: '🇨🇮' },
   { name: 'Egypt', iso: 'EG', dial: '20', flag: '🇪🇬' },
   { name: 'France', iso: 'FR', dial: '33', flag: '🇫🇷' },
   { name: 'Germany', iso: 'DE', dial: '49', flag: '🇩🇪' },
+  { name: 'Guinea', iso: 'GN', dial: '224', flag: '🇬🇳' },
   { name: 'India', iso: 'IN', dial: '91', flag: '🇮🇳' },
   { name: 'Indonesia', iso: 'ID', dial: '62', flag: '🇮🇩' },
   { name: 'Kenya', iso: 'KE', dial: '254', flag: '🇰🇪' },
+  { name: 'Madagascar', iso: 'MG', dial: '261', flag: '🇲🇬' },
   { name: 'Malaysia', iso: 'MY', dial: '60', flag: '🇲🇾' },
+  { name: 'Mali', iso: 'ML', dial: '223', flag: '🇲🇱' },
   { name: 'Mexico', iso: 'MX', dial: '52', flag: '🇲🇽' },
   { name: 'Morocco', iso: 'MA', dial: '212', flag: '🇲🇦' },
   { name: 'Nepal', iso: 'NP', dial: '977', flag: '🇳🇵' },
@@ -50,6 +55,7 @@ const COUNTRY_META = [
   { name: 'Philippines', iso: 'PH', dial: '63', flag: '🇵🇭' },
   { name: 'Poland', iso: 'PL', dial: '48', flag: '🇵🇱' },
   { name: 'Russia', iso: 'RU', dial: '7', flag: '🇷🇺' },
+  { name: 'Saint Pierre & Miquelon', iso: 'PM', dial: '508', flag: '🇵🇲' },
   { name: 'Saudi Arabia', iso: 'SA', dial: '966', flag: '🇸🇦' },
   { name: 'South Africa', iso: 'ZA', dial: '27', flag: '🇿🇦' },
   { name: 'Spain', iso: 'ES', dial: '34', flag: '🇪🇸' },
@@ -459,51 +465,54 @@ async function recordTraffic(phone) {
   await dbPut('stats/otps', state.otpStats);
 }
 
-function buildNumberCard(item, stripCC = false, otp = null) {
+function buildNumberCard(sess, otp = null) {
+  const item = sess.item;
   const serviceName = item.service || 'Telegram';
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
   const shownPhone =
-    stripCC && item.dial && digits.startsWith(item.dial)
+    sess.stripCC && item.dial && digits.startsWith(item.dial)
       ? digits.slice(item.dial.length)
       : `+${digits}`;
 
   const text =
-    `${item.flag} *${serviceName} Number Assigned:*\n` +
-    `🌍 Country: *${item.countryLabel}*\n` +
-    (otp ? `✅ *OTP Received:* \`${otp}\`` : `⏳ *Waiting for OTP....*`);
+    `${item.flag} 🟢 *${serviceName} Number Assigned:*\n` +
+    `⏳ *Waiting for OTP....*` +
+    (otp ? `\n✅ *OTP Received:* \`${otp}\`` : '');
 
   const rows = [
     [
       {
-        text: `📋 ${shownPhone}`,
+        text: `${item.flag} 📋 ${shownPhone}`,
         type: 'copy_text',
         copy_text: { text: shownPhone }
       }
     ],
     [
       {
-        text: '🔄 Change Number',
-        callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`
+        text: sess.autoChecker !== false ? '🟢 Auto Checker On' : '⏸️ Auto Checker Off',
+        callback_data: 'toggle_auto_chk'
       },
       {
-        text: '🚫 Cancel Number',
-        callback_data: 'cancel_num'
+        text: sess.stripCC ? '🟢 Restore CC' : '❌ Remove CC',
+        callback_data: 'toggle_cc'
       }
     ],
     [
       {
-        text: '🌍 Change Country',
-        callback_data: `pick_srv_${encodeURIComponent(serviceName)}`
-      },
+        text: '🔄 Change Number',
+        callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`
+      }
+    ],
+    [
       {
-        text: stripCC ? '🟢 Restore CC' : '🔴 Remove CC',
-        callback_data: 'toggle_cc'
+        text: '🌐 Change Country',
+        callback_data: `pick_srv_${encodeURIComponent(serviceName)}`
       }
     ]
   ];
 
   if (state.otpGroupLink && /^https?:\/\//i.test(state.otpGroupLink)) {
-    rows.push([{ text: '🟡 Otp Group', url: state.otpGroupLink }]);
+    rows.push([{ text: '📩 Otp Group', url: state.otpGroupLink }]);
   }
 
   return { text, reply_markup: { inline_keyboard: rows } };
@@ -631,7 +640,7 @@ async function renderAdminDashboard(ctx, preferEdit = false) {
 
 setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
-    if (!sess || !sess.item || sess.otpDelivered) continue;
+    if (!sess || !sess.item || sess.otpDelivered || sess.autoChecker === false) continue;
     try {
       const otp = await requestOtpFromPanel(sess.item.orderId, sess.item.phone);
       if (otp) {
@@ -737,12 +746,14 @@ async function handleNumberReq(ctx, service, range) {
         true
       );
     }
-    state.userSession.set(ctx.from.id, {
+    const sess = {
       item: res,
       stripCC: false,
+      autoChecker: true,
       otpDelivered: false
-    });
-    const card = buildNumberCard(res, false, null);
+    };
+    state.userSession.set(ctx.from.id, sess);
+    const card = buildNumberCard(sess, null);
     await sendCleanBoard(ctx, card.text, card.reply_markup, true);
   } catch (err) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
@@ -758,19 +769,16 @@ bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
   await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
 });
 
-bot.action('cancel_num', async (ctx) => {
+bot.action('toggle_auto_chk', async (ctx) => {
   const sess = state.userSession.get(ctx.from.id);
-  if (!sess?.item) {
-    return ctx.answerCbQuery('কোনো সক্রিয় নম্বর নেই।', { show_alert: true });
-  }
-  await ctx.answerCbQuery('বাতিল করা হচ্ছে...');
+  if (!sess?.item) return ctx.answerCbQuery('কোনো সক্রিয় নম্বর নেই।');
+  sess.autoChecker = sess.autoChecker === false ? true : false;
+  state.userSession.set(ctx.from.id, sess);
+  await ctx.answerCbQuery(sess.autoChecker ? 'Auto Checker On' : 'Auto Checker Off');
+  const card = buildNumberCard(sess, null);
   try {
-    await cancelNumberOnPanel(sess.item.orderId, sess.item.phone);
-  } catch (err) {
-    console.error('[CANCEL ERR]:', err.response?.data || err.message);
-  }
-  state.userSession.delete(ctx.from.id);
-  await sendCleanBoard(ctx, `🚫 নম্বর \`${sess.item.phone}\` বাতিল করা হয়েছে।`, null, true);
+    await rawEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, card.text, card.reply_markup);
+  } catch (_) {}
 });
 
 bot.action('toggle_cc', async (ctx) => {
@@ -779,7 +787,7 @@ bot.action('toggle_cc', async (ctx) => {
   sess.stripCC = !sess.stripCC;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.stripCC ? 'CC Removed' : 'CC Restored');
-  const card = buildNumberCard(sess.item, sess.stripCC, null);
+  const card = buildNumberCard(sess, null);
   try {
     await rawEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, card.text, card.reply_markup);
   } catch (_) {}
@@ -1058,7 +1066,7 @@ if (SELF_URL) {
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
   }
   await bot.launch();
-  console.log('Bot running with Service -> Country -> Number flow and clean buttons...');
+  console.log('Bot running with full country names and 2nd-image card buttons...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
