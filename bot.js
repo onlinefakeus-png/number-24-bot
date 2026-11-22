@@ -28,10 +28,10 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// দেশ অনুযায়ী পতাকা, ISO কোড ও ডায়ালিং কোড ম্যাপ
 const COUNTRY_META = [
   { keys: ['afghanistan'], name: 'Afghanistan', iso: 'AF', dial: '93', flag: '🇦🇫' },
   { keys: ['bangladesh'], name: 'Bangladesh', iso: 'BD', dial: '880', flag: '🇧🇩' },
+  { keys: ['belgium'], name: 'Belgium', iso: 'BE', dial: '32', flag: '🇧🇪' },
   { keys: ['cambodia'], name: 'Cambodia', iso: 'KH', dial: '855', flag: '🇰🇭' },
   { keys: ['cuba'], name: 'Cuba', iso: 'CU', dial: '53', flag: '🇨🇺' },
   { keys: ['egypt'], name: 'Egypt', iso: 'EG', dial: '20', flag: '🇪🇬' },
@@ -45,6 +45,7 @@ const COUNTRY_META = [
   { keys: ['kenya'], name: 'Kenya', iso: 'KE', dial: '254', flag: '🇰🇪' },
   { keys: ['laos'], name: 'Laos', iso: 'LA', dial: '856', flag: '🇱🇦' },
   { keys: ['liberia'], name: 'Liberia', iso: 'LR', dial: '231', flag: '🇱🇷' },
+  { keys: ['madagascar'], name: 'Madagascar', iso: 'MG', dial: '261', flag: '🇲🇬' },
   { keys: ['malaysia'], name: 'Malaysia', iso: 'MY', dial: '60', flag: '🇲🇾' },
   { keys: ['maldives'], name: 'Maldives', iso: 'MV', dial: '960', flag: '🇲🇻' },
   { keys: ['mali'], name: 'Mali', iso: 'ML', dial: '223', flag: '🇲🇱' },
@@ -133,14 +134,16 @@ const state = {
     total: 0,
     byCountry: {}
   },
+  knownPanelStockSnapshot: {},
   userSession: new Map(),
   lastBotBoardMsg: new Map(),
+  lastGetNumberUserMsg: new Map(),
   waitingSupportFrom: new Set(),
   adminWizard: new Map(),
-  cachedApiServices: null
+  cachedApiServices: null,
+  cachedApiRanges: null
 };
 
-// style: 'success' (সবুজ), 'primary' (নীল), 'danger' (লাল)
 function kbButton(text, style = null) {
   const btn = { text };
   if (style) btn.style = style;
@@ -213,6 +216,19 @@ async function deletePreviousBoard(chatId, userId, keepMessageId = null) {
   if (!prevMsgId || prevMsgId === keepMessageId) return;
   await rawDeleteMessage(chatId, prevMsgId);
   state.lastBotBoardMsg.delete(userId);
+}
+
+async function keepOnlyLatestGetNumberTrigger(ctx) {
+  const chatId = ctx.chat?.id;
+  const userId = ctx.from?.id;
+  const currentMsgId = ctx.message?.message_id;
+  if (!chatId || !userId || !currentMsgId) return;
+
+  const prevTriggerId = state.lastGetNumberUserMsg.get(userId);
+  if (prevTriggerId && prevTriggerId !== currentMsgId) {
+    await rawDeleteMessage(chatId, prevTriggerId);
+  }
+  state.lastGetNumberUserMsg.set(userId, currentMsgId);
 }
 
 async function sendCleanBoard(ctx, text, extra = {}) {
@@ -307,7 +323,7 @@ function getNormalizedBaseUrl() {
     raw = `https://${raw}`;
   }
   raw = raw.replace(/\/+$/, '');
-  raw = raw.replace(/\/(get-number|get-otp|get-services|services|active-rangre|cancel-number|balance)$/i, '');
+  raw = raw.replace(/\/(get-number|get-otp|get-services|services|active-rangre|active-range|ranges|get-countries|cancel-number|balance)$/i, '');
   return raw;
 }
 
@@ -402,6 +418,119 @@ async function fetchPanelServices() {
   return [];
 }
 
+function parseRangeEntriesFromPayload(data, defaultService = 'General') {
+  const results = [];
+  const pushRange = (item) => {
+    if (!item) return;
+    if (typeof item === 'string') {
+      const info = resolveCountryInfo(item);
+      if (info.key && info.key !== 'unknown' && !/global line|fb clone|new fb/i.test(item)) {
+        results.push({
+          service: normalizeServiceTitle(defaultService) || 'General',
+          countryKey: info.key,
+          countryLabel: info.label,
+          count: 1
+        });
+      }
+    } else if (typeof item === 'object') {
+      const rawCountry =
+        item.country ||
+        item.country_name ||
+        item.countryName ||
+        item.region ||
+        item.name ||
+        '';
+      const rawService =
+        item.service || item.service_name || item.serviceName || defaultService || 'General';
+      const rawCount =
+        Number(
+          item.count ??
+            item.available ??
+            item.stock ??
+            item.numbers_count ??
+            item.total ??
+            1
+        ) || 1;
+
+      if (rawCountry && !/global line|fb clone|new fb/i.test(String(rawCountry))) {
+        const info = resolveCountryInfo(rawCountry);
+        if (info.key && info.key !== 'unknown') {
+          results.push({
+            service: normalizeServiceTitle(rawService) || 'General',
+            countryKey: info.key,
+            countryLabel: info.label,
+            count: Math.max(0, rawCount)
+          });
+        }
+      }
+    }
+  };
+
+  if (Array.isArray(data)) {
+    data.forEach(pushRange);
+  } else if (data && typeof data === 'object') {
+    const candidates = [
+      data.ranges,
+      data.countries,
+      data.data?.ranges,
+      data.data?.countries,
+      data.data,
+      data.result?.ranges,
+      data.result?.countries,
+      data.result
+    ];
+    for (const c of candidates) {
+      if (Array.isArray(c)) {
+        c.forEach(pushRange);
+      } else if (c && typeof c === 'object') {
+        Object.entries(c).forEach(([k, v]) => {
+          if (typeof v === 'object') {
+            pushRange(v);
+          } else if (isNaN(Number(k))) {
+            pushRange({ country: k, count: Number(v) || 1 });
+          } else {
+            pushRange(v);
+          }
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+async function fetchPanelRangeEntries(service = '') {
+  if (!isApiReady()) return [];
+  const cacheKey = String(service || '__ALL__').toLowerCase();
+  if (
+    state.cachedApiRanges &&
+    state.cachedApiRanges.key === cacheKey &&
+    Date.now() - state.cachedApiRanges.ts < 60000
+  ) {
+    return state.cachedApiRanges.list;
+  }
+
+  const candidatePaths = ['/active-rangre', '/active-range', '/ranges', '/get-countries'];
+  for (const path of candidatePaths) {
+    try {
+      const endpoint = buildApiEndpoint(path, service ? { service } : {});
+      const res = await axios.get(endpoint, { timeout: 6000 });
+      const parsed = parseRangeEntriesFromPayload(res.data, service || 'General');
+      if (parsed.length) {
+        state.cachedApiRanges = { key: cacheKey, list: parsed, ts: Date.now() };
+        return parsed;
+      }
+    } catch (_) {}
+  }
+
+  return [];
+}
+
+async function fetchPanelCountriesForService(service) {
+  const entries = await fetchPanelRangeEntries(service);
+  return [...new Set(entries.map((e) => e.countryLabel).filter(Boolean))];
+}
+
 function extractOtpFromPayload(d) {
   if (!d) return null;
   if (typeof d === 'string') {
@@ -436,7 +565,7 @@ function extractOtpFromPayload(d) {
 function extractNumberFromPayload(d) {
   if (!d) return null;
   if (typeof d === 'string') {
-    const m = d.match(/\+?\d{8,15}/);
+    const m = d.match(/\+?\d{6,15}/);
     return m ? m[0] : null;
   }
   if (typeof d !== 'object') return null;
@@ -542,14 +671,9 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
   };
 }
 
-function matchesExpectedCountry(phone, expectedCountryKey) {
-  if (!expectedCountryKey || expectedCountryKey === 'api_auto' || expectedCountryKey === 'all') {
-    return true;
-  }
-  const expectedInfo = resolveCountryInfo(expectedCountryKey);
+function matchesExpectedCountry(phone) {
   const digits = String(phone || '').replace(/[^\d]/g, '');
-  if (!expectedInfo.dial) return true;
-  return digits.startsWith(expectedInfo.dial);
+  return digits.length >= 6;
 }
 
 async function fetchBalanceViaApi() {
@@ -750,6 +874,7 @@ function extractFormattedPhones(rawText, dialCode = '') {
 }
 
 async function broadcastNewNumbers(service, countryLabel, addedCount, sourceLabel) {
+  if (!addedCount || addedCount <= 0) return;
   const userMsg =
     `🔔 *নতুন নম্বর যুক্ত হয়েছে!*\n\n` +
     `📱 সার্ভিস: *${service}*\n` +
@@ -762,6 +887,40 @@ async function broadcastNewNumbers(service, countryLabel, addedCount, sourceLabe
       await rawSendMessage(uid, userMsg);
     } catch (_) {}
   }
+}
+
+async function checkPanelNewNumbersAndNotify() {
+  if (!isApiReady() || !state.users.length) return;
+  try {
+    const entries = await fetchPanelRangeEntries('');
+    if (!entries.length) return;
+
+    const currentSnapshot = {};
+    for (const item of entries) {
+      const k = `${item.service.toLowerCase()}__${item.countryKey}`;
+      currentSnapshot[k] = {
+        service: item.service,
+        countryLabel: item.countryLabel,
+        count: (currentSnapshot[k]?.count || 0) + (Number(item.count) || 0)
+      };
+    }
+
+    const prevSnapshot = state.knownPanelStockSnapshot || {};
+    const hasPrev = Object.keys(prevSnapshot).length > 0;
+
+    if (hasPrev) {
+      for (const [k, cur] of Object.entries(currentSnapshot)) {
+        const prevCount = Number(prevSnapshot[k]?.count) || 0;
+        const curCount = Number(cur.count) || 0;
+        if (curCount > prevCount) {
+          const diff = curCount - prevCount;
+          await broadcastNewNumbers(cur.service, cur.countryLabel, diff, 'API Panel');
+        }
+      }
+    }
+
+    state.knownPanelStockSnapshot = currentSnapshot;
+  } catch (_) {}
 }
 
 async function finalizeAddedNumbers(ctx, service, rawCountry, rawNumbers, sourceLabel) {
@@ -864,7 +1023,6 @@ async function sendGroupVerifyPrompt(ctx) {
   );
 }
 
-// রঙিন স্টাইলসহ মেইন Reply Keyboard
 function getMainReplyKeyboard(isAdmin) {
   const rows = [
     [kbButton('🟢 GET NUMBER', 'success')],
@@ -1086,6 +1244,10 @@ setInterval(async () => {
   }
 }, 4000);
 
+setInterval(async () => {
+  await checkPanelNewNumbersAndNotify();
+}, 25000);
+
 bot.start(async (ctx) => {
   await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
@@ -1183,6 +1345,7 @@ bot.action('tgl_api_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiUrlEnabled = !state.apiUrlEnabled;
   state.cachedApiServices = null;
+  state.cachedApiRanges = null;
   await dbPut('config/apiUrlEnabled', state.apiUrlEnabled);
   await renderPayload(
     ctx,
@@ -1195,6 +1358,7 @@ bot.action('tgl_api_key', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiKeyEnabled = !state.apiKeyEnabled;
   state.cachedApiServices = null;
+  state.cachedApiRanges = null;
   await dbPut('config/apiKeyEnabled', state.apiKeyEnabled);
   await renderPayload(
     ctx,
@@ -1207,6 +1371,7 @@ bot.action('all_off_btn', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   await turnAllOff();
   state.cachedApiServices = null;
+  state.cachedApiRanges = null;
   await renderPayload(ctx, getMainAdminPayload, 'সব API অপশন OFF করা হয়েছে');
 });
 
@@ -1339,6 +1504,7 @@ async function showServiceSelection(ctx, isEdit = false) {
 
 bot.hears('🟢 GET NUMBER', async (ctx) => {
   await registerUser(ctx.from.id);
+  await keepOnlyLatestGetNumberTrigger(ctx);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
   if (!isAdmin && !(await isUserVerifiedInGroups(ctx))) {
     return sendGroupVerifyPrompt(ctx);
@@ -1361,6 +1527,14 @@ async function showCountrySelection(ctx, service, isEdit = true) {
   }
 
   if (isApiReady()) {
+    const panelCountries = await fetchPanelCountriesForService(service);
+    for (const rawLbl of panelCountries) {
+      const info = resolveCountryInfo(rawLbl);
+      if (!countryMap.has(info.key)) {
+        countryMap.set(info.key, info.label);
+      }
+    }
+
     for (const c of COUNTRY_META) {
       const k = c.name.toLowerCase();
       if (!countryMap.has(k)) {
@@ -1495,33 +1669,28 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
     } else {
       try {
         const apiNum = await fetchNumberViaApi(service, countryKey === 'api_auto' ? '' : countryKey);
-        if (apiNum?.phone) {
-          if (!matchesExpectedCountry(apiNum.phone, countryKey)) {
-            noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
-          } else {
-            const cInfo =
-              countryKey === 'api_auto'
-                ? detectCountryForPhone(apiNum.phone)
-                : {
-                    key: requestedMeta.key,
-                    label: requestedMeta.label,
-                    dial: requestedMeta.dial
-                  };
-            countryLabel = cInfo.label;
-            flag = cInfo.label.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] || requestedMeta.flag || '🌍';
-            picked = [
-              {
-                service,
-                countryKey: cInfo.key,
-                countryLabel,
-                flag,
-                dial: cInfo.dial || '',
-                phone: apiNum.phone,
-                source: 'api',
-                orderId: apiNum.orderId || null
-              }
-            ];
-          }
+        if (apiNum?.phone && matchesExpectedCountry(apiNum.phone)) {
+          const cInfo = detectCountryForPhone(apiNum.phone);
+          countryLabel =
+            countryKey !== 'api_auto' && requestedMeta.label
+              ? requestedMeta.label
+              : cInfo.label;
+          flag =
+            countryLabel.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] ||
+            requestedMeta.flag ||
+            '🌍';
+          picked = [
+            {
+              service,
+              countryKey: countryKey !== 'api_auto' ? requestedMeta.key : cInfo.key,
+              countryLabel,
+              flag,
+              dial: cInfo.dial || requestedMeta.dial || '',
+              phone: apiNum.phone,
+              source: 'api',
+              orderId: apiNum.orderId || null
+            }
+          ];
         } else {
           noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
         }
@@ -1759,7 +1928,7 @@ bot.on('text', async (ctx) => {
       state.adminWizard.set(userId, current);
       await rawSendMessage(
         ctx.chat.id,
-        '2️⃣ দেশের নাম লিখুন (যেমন: `Afghanistan`, `Egypt`, `Bangladesh`, `Pakistan` ইত্যাদি):'
+        '2️⃣ দেশের নাম লিখুন (যেমন: `Afghanistan`, `Egypt`, `Madagascar`, `Pakistan` ইত্যাদি):'
       );
       return;
     }
@@ -1815,6 +1984,7 @@ bot.on('text', async (ctx) => {
     if (current.step === 'set_api_url') {
       state.apiUrl = inputText;
       state.cachedApiServices = null;
+      state.cachedApiRanges = null;
       await dbPut('config/apiUrl', inputText);
       await rawSendMessage(ctx.chat.id, `✅ API URL সেট হয়েছে:\n\`${getNormalizedBaseUrl()}\``);
       return;
@@ -1823,6 +1993,7 @@ bot.on('text', async (ctx) => {
     if (current.step === 'set_api_key') {
       state.apiKey = inputText;
       state.cachedApiServices = null;
+      state.cachedApiRanges = null;
       await dbPut('config/apiKey', inputText);
       await rawSendMessage(ctx.chat.id, '✅ API KEY সেট হয়েছে।');
       return;
