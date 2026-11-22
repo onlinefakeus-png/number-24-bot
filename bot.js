@@ -10,6 +10,16 @@ const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
 const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
 const DEFAULT_NXV_BASE = 'https://nxv-sms.vercel.app';
+const FALLBACK_SERVICES = [
+  'WhatsApp',
+  'Telegram',
+  'Instagram',
+  'Facebook',
+  'Google',
+  'TikTok',
+  'Twitter',
+  'Discord'
+];
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
@@ -23,6 +33,7 @@ const COUNTRY_META = [
   { keys: ['afghanistan'], name: 'Afghanistan', iso: 'AF', dial: '93', flag: '🇦🇫' },
   { keys: ['bangladesh'], name: 'Bangladesh', iso: 'BD', dial: '880', flag: '🇧🇩' },
   { keys: ['cambodia'], name: 'Cambodia', iso: 'KH', dial: '855', flag: '🇰🇭' },
+  { keys: ['cuba'], name: 'Cuba', iso: 'CU', dial: '53', flag: '🇨🇺' },
   { keys: ['egypt'], name: 'Egypt', iso: 'EG', dial: '20', flag: '🇪🇬' },
   { keys: ['georgia'], name: 'Georgia', iso: 'GE', dial: '995', flag: '🇬🇪' },
   { keys: ['guatemala'], name: 'Guatemala', iso: 'GT', dial: '502', flag: '🇬🇹' },
@@ -40,11 +51,16 @@ const COUNTRY_META = [
   { keys: ['nepal'], name: 'Nepal', iso: 'NP', dial: '977', flag: '🇳🇵' },
   { keys: ['nigeria'], name: 'Nigeria', iso: 'NG', dial: '234', flag: '🇳🇬' },
   { keys: ['pakistan'], name: 'Pakistan', iso: 'PK', dial: '92', flag: '🇵🇰' },
+  { keys: ['peru'], name: 'Peru', iso: 'PE', dial: '51', flag: '🇵🇪' },
   { keys: ['russia'], name: 'Russia', iso: 'RU', dial: '7', flag: '🇷🇺' },
   { keys: ['senegal'], name: 'Senegal', iso: 'SN', dial: '221', flag: '🇸🇳' },
   { keys: ['sierra leone', 'sierra'], name: 'Sierra Leone', iso: 'SL', dial: '232', flag: '🇸🇱' },
+  { keys: ['sudan'], name: 'Sudan', iso: 'SD', dial: '249', flag: '🇸🇩' },
+  { keys: ['togo'], name: 'Togo', iso: 'TG', dial: '228', flag: '🇹🇬' },
   { keys: ['uk', 'united kingdom', 'britain', 'england'], name: 'United Kingdom', iso: 'GB', dial: '44', flag: '🇬🇧' },
-  { keys: ['usa', 'united states', 'america'], name: 'United States', iso: 'US', dial: '1', flag: '🇺🇸' }
+  { keys: ['usa', 'united states', 'america'], name: 'United States', iso: 'US', dial: '1', flag: '🇺🇸' },
+  { keys: ['yemen'], name: 'Yemen', iso: 'YE', dial: '967', flag: '🇾🇪' },
+  { keys: ['zambia'], name: 'Zambia', iso: 'ZM', dial: '260', flag: '🇿🇲' }
 ];
 
 function resolveCountryInfo(rawCountry) {
@@ -116,9 +132,55 @@ const state = {
     byCountry: {}
   },
   userSession: new Map(),
+  lastBotBoardMsg: new Map(),
   waitingSupportFrom: new Set(),
-  adminWizard: new Map()
+  adminWizard: new Map(),
+  cachedApiServices: null
 };
+
+// আগের বট বোর্ড মেসেজ অটো ডিলিট করার হেল্পার
+async function deletePreviousBoard(ctxOrTelegram, chatId, userId, keepMessageId = null) {
+  const prevMsgId = state.lastBotBoardMsg.get(userId);
+  if (!prevMsgId || prevMsgId === keepMessageId) return;
+  try {
+    const tg = ctxOrTelegram?.telegram || bot.telegram;
+    await tg.deleteMessage(chatId, prevMsgId);
+  } catch (_) {}
+  state.lastBotBoardMsg.delete(userId);
+}
+
+async function sendCleanBoard(ctx, text, extra = {}) {
+  const chatId = ctx.chat?.id;
+  const userId = ctx.from?.id;
+  const activeMsgId = ctx.callbackQuery?.message?.message_id || null;
+
+  if (chatId && userId) {
+    await deletePreviousBoard(ctx, chatId, userId, activeMsgId);
+  }
+
+  if (activeMsgId && extra.preferEdit) {
+    const cleanExtra = { ...extra };
+    delete cleanExtra.preferEdit;
+    try {
+      const edited = await ctx.editMessageText(text, {
+        parse_mode: 'Markdown',
+        ...cleanExtra
+      });
+      if (userId && edited?.message_id) {
+        state.lastBotBoardMsg.set(userId, edited.message_id);
+      }
+      return edited;
+    } catch (_) {}
+  }
+
+  const cleanExtra = { ...extra };
+  delete cleanExtra.preferEdit;
+  const sent = await ctx.reply(text, { parse_mode: 'Markdown', ...cleanExtra });
+  if (userId && sent?.message_id) {
+    state.lastBotBoardMsg.set(userId, sent.message_id);
+  }
+  return sent;
+}
 
 async function dbGet(dbPath) {
   if (!FIREBASE_DB_URL) return null;
@@ -182,7 +244,7 @@ function getNormalizedBaseUrl() {
     raw = `https://${raw}`;
   }
   raw = raw.replace(/\/+$/, '');
-  raw = raw.replace(/\/(get-number|get-otp|active-rangre|cancel-number|balance)$/i, '');
+  raw = raw.replace(/\/(get-number|get-otp|get-services|services|active-rangre|cancel-number|balance)$/i, '');
   return raw;
 }
 
@@ -203,6 +265,79 @@ function buildApiEndpoint(endpointPath, extraParams = {}) {
   });
 
   return url.toString();
+}
+
+function normalizeServiceTitle(rawSrv) {
+  const clean = String(rawSrv || '').trim();
+  if (!clean) return '';
+  return clean
+    .split(/[\s_-]+/)
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1).toLowerCase() : ''))
+    .join(' ');
+}
+
+function parseServicesFromResponse(data) {
+  const found = [];
+  const pushVal = (val) => {
+    if (!val) return;
+    if (typeof val === 'string') {
+      const n = normalizeServiceTitle(val);
+      if (n && n.length <= 35 && !/http|error|invalid|unauthorized/i.test(n)) {
+        found.push(n);
+      }
+    } else if (typeof val === 'object') {
+      const candidate =
+        val.service || val.name || val.serviceName || val.service_name || val.title;
+      if (candidate) pushVal(candidate);
+    }
+  };
+
+  if (Array.isArray(data)) {
+    data.forEach(pushVal);
+  } else if (data && typeof data === 'object') {
+    const listCandidates = [
+      data.services,
+      data.data?.services,
+      data.data,
+      data.result?.services,
+      data.result
+    ];
+    for (const c of listCandidates) {
+      if (Array.isArray(c)) {
+        c.forEach(pushVal);
+      } else if (c && typeof c === 'object' && !Array.isArray(c)) {
+        Object.keys(c).forEach((k) => {
+          if (isNaN(Number(k))) pushVal(k);
+          else pushVal(c[k]);
+        });
+      }
+    }
+  }
+
+  return [...new Set(found)];
+}
+
+// প্যানেল থেকে সব সার্ভিস আনার চেষ্টা
+async function fetchPanelServices() {
+  if (!isApiReady()) return [];
+  if (state.cachedApiServices && Date.now() - state.cachedApiServices.ts < 60000) {
+    return state.cachedApiServices.list;
+  }
+
+  const candidatePaths = ['/get-services', '/services'];
+  for (const path of candidatePaths) {
+    try {
+      const endpoint = buildApiEndpoint(path);
+      const res = await axios.get(endpoint, { timeout: 6000 });
+      const parsed = parseServicesFromResponse(res.data);
+      if (parsed.length) {
+        state.cachedApiServices = { list: parsed, ts: Date.now() };
+        return parsed;
+      }
+    } catch (_) {}
+  }
+
+  return [];
 }
 
 function extractOtpFromPayload(d) {
@@ -316,9 +451,9 @@ async function fetchOtpViaApi(phone, orderId = '') {
 async function fetchNumberViaApi(service = '', countryKey = '') {
   if (!isApiReady()) return null;
   const params = {
-    service: service && service !== 'NXV Auto' ? service : 'Telegram'
+    service: service && service !== 'NXV Auto' ? service : 'WhatsApp'
   };
-  if (countryKey && countryKey !== 'api_auto') {
+  if (countryKey && countryKey !== 'api_auto' && countryKey !== 'all') {
     params.country = countryKey;
   }
 
@@ -647,12 +782,10 @@ async function sendGroupVerifyPrompt(ctx) {
   }
   buttons.push([Markup.button.callback('🟢 Verify Join', 'verify_group_join')]);
 
-  await ctx.reply(
+  await sendCleanBoard(
+    ctx,
     '🔒 বট ব্যবহার করতে হলে আগে নিচের গ্রুপগুলোতে জয়েন করুন এবং **Verify Join** চাপুন:',
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard(buttons)
-    }
+    { ...Markup.inlineKeyboard(buttons) }
   );
 }
 
@@ -879,7 +1012,8 @@ bot.start(async (ctx) => {
     await ctx.reply('স্বাগতম! নিচের মেনু:', getMainReplyKeyboard(false));
     return sendGroupVerifyPrompt(ctx);
   }
-  await ctx.reply(
+  await sendCleanBoard(
+    ctx,
     'স্বাগতম! নিচের মেনু থেকে অপশন বেছে নিন:',
     getMainReplyKeyboard(isAdmin)
   );
@@ -890,7 +1024,7 @@ bot.action('verify_group_join', async (ctx) => {
   const ok = await isUserVerifiedInGroups(ctx);
   if (ok) {
     await ctx.answerCbQuery('✅ ভেরিফাই সফল হয়েছে!');
-    await ctx.reply('✅ গ্রুপ ভেরিফিকেশন সম্পন্ন হয়েছে। এখন বট ব্যবহার করতে পারবেন।');
+    await sendCleanBoard(ctx, '✅ গ্রুপ ভেরিফিকেশন সম্পন্ন হয়েছে। এখন বট ব্যবহার করতে পারবেন।');
   } else {
     await ctx.answerCbQuery('❌ আগে গ্রুপগুলোতে জয়েন করুন।', { show_alert: true });
   }
@@ -902,18 +1036,14 @@ async function renderPayload(ctx, payloadGetter, toastText = '') {
   }
   if (toastText) await ctx.answerCbQuery(toastText);
   const { text, keyboard } = payloadGetter();
-  try {
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
-  } catch (_) {
-    await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
-  }
+  await sendCleanBoard(ctx, text, { ...keyboard, preferEdit: true });
 }
 
 bot.hears('💠 ADMIN PANEL', async (ctx) => {
   await registerUser(ctx.from.id);
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const { text, keyboard } = getMainAdminPayload();
-  await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
+  await sendCleanBoard(ctx, text, keyboard);
 });
 
 bot.action('back_admin_main', (ctx) => renderPayload(ctx, getMainAdminPayload));
@@ -930,18 +1060,18 @@ bot.action('adm_check_balance', async (ctx) => {
   try {
     const res = await fetchBalanceViaApi();
     if (!res.ok) {
-      return ctx.reply(`⚠️ ${res.error}`);
+      return sendCleanBoard(ctx, `⚠️ ${res.error}`);
     }
-    await ctx.reply(
-      `🟡 *API BALANCE RESPONSE:*\n\`${JSON.stringify(res.data, null, 2).slice(0, 1500)}\``,
-      { parse_mode: 'Markdown' }
+    await sendCleanBoard(
+      ctx,
+      `🟡 *API BALANCE RESPONSE:*\n\`${JSON.stringify(res.data, null, 2).slice(0, 1500)}\``
     );
   } catch (err) {
     console.error('[NXV BALANCE ERR]:', err.response?.data || err.message);
     const detail = err.response?.data
       ? JSON.stringify(err.response.data).slice(0, 500)
       : err.message;
-    await ctx.reply(`❌ ব্যালেন্স চেক ব্যর্থ: \`${detail}\``, { parse_mode: 'Markdown' });
+    await sendCleanBoard(ctx, `❌ ব্যালেন্স চেক ব্যর্থ: \`${detail}\``);
   }
 });
 
@@ -971,6 +1101,7 @@ bot.action(/^del_cnt_(.+)$/, async (ctx) => {
 bot.action('tgl_api_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiUrlEnabled = !state.apiUrlEnabled;
+  state.cachedApiServices = null;
   await dbPut('config/apiUrlEnabled', state.apiUrlEnabled);
   await renderPayload(
     ctx,
@@ -982,6 +1113,7 @@ bot.action('tgl_api_url', async (ctx) => {
 bot.action('tgl_api_key', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiKeyEnabled = !state.apiKeyEnabled;
+  state.cachedApiServices = null;
   await dbPut('config/apiKeyEnabled', state.apiKeyEnabled);
   await renderPayload(
     ctx,
@@ -993,6 +1125,7 @@ bot.action('tgl_api_key', async (ctx) => {
 bot.action('all_off_btn', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   await turnAllOff();
+  state.cachedApiServices = null;
   await renderPayload(ctx, getMainAdminPayload, 'সব API অপশন OFF করা হয়েছে');
 });
 
@@ -1002,9 +1135,9 @@ bot.action('adm_add_number', async (ctx) => {
   }
   state.adminWizard.set(ctx.from.id, { step: 'ask_service', draft: {} });
   await ctx.answerCbQuery();
-  await ctx.reply(
-    '1️⃣ সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` অথবা `Telegram` বা আপনার পছন্দমতো):',
-    { parse_mode: 'Markdown' }
+  await sendCleanBoard(
+    ctx,
+    '1️⃣ সার্ভিসের নাম লিখুন (যেমন: `WhatsApp` অথবা `Telegram` বা আপনার পছন্দমতো):'
   );
 });
 
@@ -1028,16 +1161,14 @@ function startFieldPrompt(stepKey, promptMsg) {
     }
     state.adminWizard.set(ctx.from.id, { step: stepKey, draft: {} });
     await ctx.answerCbQuery();
-    await ctx.reply(`${promptMsg}\n\n_(বাতিল করতে /cancel লিখুন)_`, {
-      parse_mode: 'Markdown'
-    });
+    await sendCleanBoard(ctx, `${promptMsg}\n\n_(বাতিল করতে /cancel লিখুন)_`);
   };
 }
 
 bot.command('cancel', async (ctx) => {
   if (state.adminWizard.has(ctx.from.id)) {
     state.adminWizard.delete(ctx.from.id);
-    await ctx.reply('✅ সেটআপ বাতিল করা হয়েছে।');
+    await sendCleanBoard(ctx, '✅ সেটআপ বাতিল করা হয়েছে।');
   }
 });
 
@@ -1065,13 +1196,13 @@ bot.command('setotp', async (ctx) => {
 bot.hears('🩷 SUPPORT', async (ctx) => {
   await registerUser(ctx.from.id);
   state.waitingSupportFrom.add(ctx.from.id);
-  await ctx.reply('🩷 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
+  await sendCleanBoard(ctx, '🩷 আপনার মেসেজটি লিখুন। সরাসরি সাপোর্টে পাঠানো হবে।');
 });
 
 bot.hears('🟡 NUMBER FILE', async (ctx) => {
   await registerUser(ctx.from.id);
   if (!state.numberEntries.length) {
-    return ctx.reply('🟡 বর্তমানে কোনো নম্বর ফাইল/স্টক যুক্ত নেই।');
+    return sendCleanBoard(ctx, '🟡 বর্তমানে কোনো নম্বর ফাইল/স্টক যুক্ত নেই।');
   }
   const summaryMap = new Map();
   for (const item of state.numberEntries) {
@@ -1081,32 +1212,38 @@ bot.hears('🟡 NUMBER FILE', async (ctx) => {
   const lines = Array.from(summaryMap.entries()).map(
     ([key, count]) => `• *${key}*: \`${count}\`টি`
   );
-  await ctx.reply(
-    `🟡 *NUMBER FILE STOCK*\n\n${lines.join('\n')}\n\n📦 মোট সংরক্ষিত নম্বর: \`${state.numberEntries.length}\`টি`,
-    { parse_mode: 'Markdown' }
+  await sendCleanBoard(
+    ctx,
+    `🟡 *NUMBER FILE STOCK*\n\n${lines.join('\n')}\n\n📦 মোট সংরক্ষিত নম্বর: \`${state.numberEntries.length}\`টি`
   );
 });
 
+// প্যানেল বা স্টকের সব সার্ভিস শো করবে
 async function showServiceSelection(ctx, isEdit = false) {
-  const services = [...new Set(state.numberEntries.map((e) => e.service).filter(Boolean))];
-  if (!services.length && !isApiReady()) {
-    return ctx.reply('⚠️ এখন কোনো সার্ভিস বা নম্বর স্টকে নেই।');
+  const stockServices = [...new Set(state.numberEntries.map((e) => e.service).filter(Boolean))];
+  const panelServices = isApiReady() ? await fetchPanelServices() : [];
+
+  if (!stockServices.length && !isApiReady()) {
+    return sendCleanBoard(ctx, '⚠️ এখন কোনো সার্ভিস বা নম্বর স্টকে নেই।');
   }
 
-  const listToShow = services.length ? services : ['Telegram'];
+  const serviceList = isApiReady()
+    ? [...new Set([...panelServices, ...stockServices, ...(panelServices.length ? [] : FALLBACK_SERVICES)])]
+    : stockServices;
+
   const rows = [];
-  for (let i = 0; i < listToShow.length; i += 2) {
+  for (let i = 0; i < serviceList.length; i += 2) {
     const row = [
       Markup.button.callback(
-        `🟢 ${listToShow[i]}`,
-        `pick_srv_${encodeURIComponent(listToShow[i])}`
+        `🟢 ${serviceList[i].toUpperCase()}`,
+        `pick_srv_${encodeURIComponent(serviceList[i])}`
       )
     ];
-    if (listToShow[i + 1]) {
+    if (serviceList[i + 1]) {
       row.push(
         Markup.button.callback(
-          `🔵 ${listToShow[i + 1]}`,
-          `pick_srv_${encodeURIComponent(listToShow[i + 1])}`
+          `🔵 ${serviceList[i + 1].toUpperCase()}`,
+          `pick_srv_${encodeURIComponent(serviceList[i + 1])}`
         )
       );
     }
@@ -1114,16 +1251,10 @@ async function showServiceSelection(ctx, isEdit = false) {
   }
 
   const msgText = '1️⃣ প্রথমে **Service** বেছে নিন:';
-  if (isEdit) {
-    try {
-      await ctx.editMessageText(msgText, {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard(rows)
-      });
-      return;
-    } catch (_) {}
-  }
-  await ctx.reply(msgText, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) });
+  await sendCleanBoard(ctx, msgText, {
+    ...Markup.inlineKeyboard(rows),
+    preferEdit: isEdit
+  });
 }
 
 bot.hears('🟢 GET NUMBER', async (ctx) => {
@@ -1135,6 +1266,7 @@ bot.hears('🟢 GET NUMBER', async (ctx) => {
   await showServiceSelection(ctx, false);
 });
 
+// সার্ভিস সিলেক্ট করার পর দেশ শো করবে
 async function showCountrySelection(ctx, service, isEdit = true) {
   const entriesForService = state.numberEntries.filter(
     (e) => e.service.toLowerCase() === service.toLowerCase()
@@ -1149,34 +1281,34 @@ async function showCountrySelection(ctx, service, isEdit = true) {
     }
   }
 
+  if (isApiReady()) {
+    for (const c of COUNTRY_META) {
+      const k = c.name.toLowerCase();
+      if (!countryMap.has(k)) {
+        countryMap.set(k, `${c.flag} ${c.name} (${c.iso})`);
+      }
+    }
+  }
+
   const countries = Array.from(countryMap.entries());
   if (!countries.length) {
-    if (isApiReady()) {
-      const { text, keyboard } = await buildAssignedCard(ctx.from.id, service, 'api_auto', {
-        keepCurrentBatch: false,
-        advanceBatch: false
-      });
-      if (isEdit) {
-        try {
-          return await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
-        } catch (_) {}
-      }
-      return ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
-    }
-
     const emptyText = `⚠️ *${service}* সার্ভিসে এখন কোনো দেশ বা নম্বর নেই।`;
     const kb = Markup.inlineKeyboard([
       [Markup.button.callback('🟣 Back to Service', 'back_srv_list')]
     ]);
-    if (isEdit) {
-      try {
-        return await ctx.editMessageText(emptyText, { parse_mode: 'Markdown', ...kb });
-      } catch (_) {}
-    }
-    return ctx.reply(emptyText, { parse_mode: 'Markdown', ...kb });
+    return sendCleanBoard(ctx, emptyText, { ...kb, preferEdit: isEdit });
   }
 
   const rows = [];
+  if (isApiReady()) {
+    rows.push([
+      Markup.button.callback(
+        `🌍 Any Available Country (Auto)`,
+        `pick_cnt_${encodeURIComponent(service)}__${encodeURIComponent('api_auto')}`
+      )
+    ]);
+  }
+
   for (let i = 0; i < countries.length; i += 2) {
     const [k1, lbl1] = countries[i];
     const row = [
@@ -1199,16 +1331,10 @@ async function showCountrySelection(ctx, service, isEdit = true) {
   rows.push([Markup.button.callback('🟣 Back to Service', 'back_srv_list')]);
 
   const msgText = `📱 *${service} Select Country:*`;
-  if (isEdit) {
-    try {
-      await ctx.editMessageText(msgText, {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard(rows)
-      });
-      return;
-    } catch (_) {}
-  }
-  await ctx.reply(msgText, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) });
+  await sendCleanBoard(ctx, msgText, {
+    ...Markup.inlineKeyboard(rows),
+    preferEdit: isEdit
+  });
 }
 
 bot.action(/^pick_srv_(.+)$/, async (ctx) => {
@@ -1419,7 +1545,7 @@ bot.action(/^pick_cnt_(.+)__(.+)$/, async (ctx) => {
     keepCurrentBatch: false,
     advanceBatch: false
   });
-  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
+  await sendCleanBoard(ctx, text, { ...keyboard, preferEdit: true });
 });
 
 bot.action(/^copy_num_(.+)$/, async (ctx) => {
@@ -1469,11 +1595,7 @@ bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
     keepCurrentBatch: false,
     advanceBatch: true
   });
-  try {
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
-  } catch (_) {
-    await ctx.reply(text, { parse_mode: 'Markdown', ...keyboard });
-  }
+  await sendCleanBoard(ctx, text, { ...keyboard, preferEdit: true });
 });
 
 bot.action(/^chg_cnt_(.+)$/, async (ctx) => {
@@ -1493,22 +1615,22 @@ bot.action('open_otp_group_fallback', async (ctx) => {
 
 bot.hears('🟣 WALLET', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply('🟣 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
+  return sendCleanBoard(ctx, '🟣 আপনার ওয়ালেট ব্যালেন্স তথ্য এখানে দেখা যাবে।');
 });
 
 bot.hears('🔵 TRAFFIC', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply(buildTrafficReportText(), { parse_mode: 'Markdown' });
+  return sendCleanBoard(ctx, buildTrafficReportText());
 });
 
 bot.hears('🩵 WA CHECKER', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply('🩵 WhatsApp Checker সার্ভিস প্রস্তুত।');
+  return sendCleanBoard(ctx, '🩵 WhatsApp Checker সার্ভিস প্রস্তুত।');
 });
 
 bot.hears('🟠 LANGUAGE', async (ctx) => {
   await registerUser(ctx.from.id);
-  return ctx.reply('🟠 বর্তমান ভাষা: বাংলা (BN)');
+  return sendCleanBoard(ctx, '🟠 বর্তমান ভাষা: বাংলা (BN)');
 });
 
 bot.on('document', async (ctx) => {
@@ -1612,6 +1734,7 @@ bot.on('text', async (ctx) => {
 
     if (current.step === 'set_api_url') {
       state.apiUrl = inputText;
+      state.cachedApiServices = null;
       await dbPut('config/apiUrl', inputText);
       await ctx.reply(`✅ API URL সেট হয়েছে:\n\`${getNormalizedBaseUrl()}\``, {
         parse_mode: 'Markdown'
@@ -1621,6 +1744,7 @@ bot.on('text', async (ctx) => {
 
     if (current.step === 'set_api_key') {
       state.apiKey = inputText;
+      state.cachedApiServices = null;
       await dbPut('config/apiKey', inputText);
       await ctx.reply('✅ API KEY সেট হয়েছে।');
       return;
