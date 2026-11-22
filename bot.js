@@ -275,6 +275,7 @@ function resolveCountryInfo(rawInput) {
     return {
       key: byNameOrIso.iso.toLowerCase(),
       name: byNameOrIso.name,
+      iso: byNameOrIso.iso,
       label: `${byNameOrIso.flag} ${byNameOrIso.name} (${byNameOrIso.iso})`,
       flag: byNameOrIso.flag,
       dial: byNameOrIso.dial
@@ -288,6 +289,7 @@ function resolveCountryInfo(rawInput) {
       return {
         key: c.iso.toLowerCase(),
         name: c.name,
+        iso: c.iso,
         label: `${c.flag} ${c.name} (${c.iso})`,
         flag: c.flag,
         dial: c.dial
@@ -299,6 +301,7 @@ function resolveCountryInfo(rawInput) {
   return {
     key: `code_${fallbackCode}`,
     name: `Country +${fallbackCode}`,
+    iso: 'XX',
     label: `🌍 Country +${fallbackCode}`,
     flag: '🌍',
     dial: ''
@@ -308,6 +311,23 @@ function resolveCountryInfo(rawInput) {
 function normalizePhone(raw) {
   const digits = String(raw || '').replace(/[^\d]/g, '');
   return digits.length >= 6 && digits.length <= 15 ? `+${digits}` : null;
+}
+
+function formatDashedOtp(otpRaw) {
+  const clean = String(otpRaw || '').replace(/\D/g, '');
+  if (clean.length === 6) return `${clean.slice(0, 3)}-${clean.slice(3)}`;
+  if (clean.length === 5) return `${clean.slice(0, 2)}-${clean.slice(2)}`;
+  if (clean.length === 4) return `${clean.slice(0, 2)}-${clean.slice(2)}`;
+  return String(otpRaw || '').trim();
+}
+
+function getServiceShortTag(service) {
+  const s = String(service || '').toLowerCase();
+  if (s.includes('whatsapp')) return 'WS';
+  if (s.includes('telegram')) return 'TG';
+  if (s.includes('facebook')) return 'FB';
+  if (s.includes('instagram')) return 'IG';
+  return String(service || 'OTP').slice(0, 3).toUpperCase();
 }
 
 async function dbGet(dbPath) {
@@ -560,6 +580,8 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
     phone,
     orderId: d.orderId || d.order_id || d.data?.orderId || d.data?.order_id || null,
     countryKey: countryInfo.key,
+    countryName: countryInfo.name,
+    countryIso: countryInfo.iso,
     countryLabel: countryInfo.label,
     flag: countryInfo.flag,
     dial: countryInfo.dial
@@ -595,6 +617,60 @@ async function recordTraffic(phone) {
   await dbPut('stats/otps', state.otpStats);
 }
 
+async function deliverOtpToUserAndGroup(uid, item, rawOtp) {
+  const formattedOtp = formatDashedOtp(rawOtp);
+  const digits = String(item.phone || '').replace(/[^\d]/g, '');
+  const serviceName = item.service || 'WhatsApp';
+
+  // 1st image style: flag + Service + digits, then inline copy button with dashed OTP
+  const userText = `${item.flag} *${serviceName}* \`${digits}\``;
+  const userMarkup = {
+    inline_keyboard: [
+      [
+        {
+          text: `📋 ${formattedOtp}`,
+          type: 'copy_text',
+          copy_text: { text: formattedOtp },
+          style: 'success'
+        }
+      ]
+    ]
+  };
+
+  await rawSendMessage(uid, userText, userMarkup);
+
+  // 2nd image style: pushed to OTP group if configured
+  const otpGroupTarget = String(state.otpGroupId || '').trim() || extractUsernameFromLink(state.otpGroupLink);
+  if (otpGroupTarget) {
+    const shortTag = getServiceShortTag(serviceName);
+    const prefix = digits.slice(0, 4) || 'N/A';
+    const rngCode = item.range && item.range !== 'auto' ? String(item.range).slice(0, 6) : digits.slice(0, 6);
+
+    const groupText =
+      `${item.flag} *${item.countryName}* 🟢 *${shortTag}*\n\n` +
+      `\`#${item.countryIso}\` *${digits}*\n` +
+      `Prefix: \`${prefix}\` | Range: \`#${rngCode}\``;
+
+    const grpButtons = [];
+    if (state.mainGroupLink && /^https?:\/\//i.test(state.mainGroupLink)) {
+      grpButtons.push({ text: '📢 Channel', url: state.mainGroupLink, style: 'primary' });
+    }
+    if (bot.botInfo?.username) {
+      grpButtons.push({ text: '🤖 Bot Link', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
+    }
+
+    try {
+      await rawSendMessage(
+        otpGroupTarget,
+        groupText,
+        grpButtons.length ? { inline_keyboard: [grpButtons] } : null
+      );
+    } catch (e) {
+      console.error('[OTP GROUP SEND ERR]:', e.message);
+    }
+  }
+}
+
 function buildNumberCard(sess, otp = null) {
   const item = sess.item;
   const serviceName = item.service || 'Telegram';
@@ -608,7 +684,7 @@ function buildNumberCard(sess, otp = null) {
     `${item.flag} 🟢 *${serviceName} Number Assigned:*\n` +
     `🌍 Country: *${item.countryLabel}*\n` +
     `⏳ *Waiting for OTP....*` +
-    (otp ? `\n✅ *OTP Received:* \`${otp}\`` : '');
+    (otp ? `\n✅ *OTP Received:* \`${formatDashedOtp(otp)}\`` : '');
 
   const rows = [
     [
@@ -785,23 +861,14 @@ setInterval(async () => {
         state.userSession.set(uid, sess);
         await recordTraffic(sess.item.phone);
 
-        let rewardMsg = '';
         if (Number(state.otpReward) > 0) {
           const curBal = Number(state.balances[String(uid)] || 0);
           const nextBal = Number((curBal + Number(state.otpReward)).toFixed(2));
           state.balances[String(uid)] = nextBal;
           await dbPut(`balances/${uid}`, nextBal);
-          rewardMsg = `\n💰 Reward: +${state.otpReward} (Balance: \`${nextBal}\`)`;
         }
 
-        await rawSendMessage(
-          uid,
-          `✅ *OTP Received!*\n\n` +
-            `📱 Service: *${sess.item.service || 'Telegram'}*\n` +
-            `🌍 Country: *${sess.item.countryLabel}*\n` +
-            `📞 Number: \`${sess.item.phone}\`\n` +
-            `🔑 OTP: \`${otp}\`${rewardMsg}`
-        );
+        await deliverOtpToUserAndGroup(uid, sess.item, otp);
       }
     } catch (err) {
       console.error('[GET-OTP ERR]:', err.response?.data || err.message);
@@ -1218,7 +1285,7 @@ if (SELF_URL) {
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
   }
   await bot.launch();
-  console.log('Bot running with all panel countries per service and auto country/number card...');
+  console.log('Bot running with dashed OTP copy buttons and OTP group delivery...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
