@@ -81,7 +81,8 @@ function resolveCountryInfo(rawCountry) {
       key: matched.name.toLowerCase(),
       label,
       flag: matched.flag,
-      dial: matched.dial
+      dial: matched.dial,
+      iso: matched.iso
     };
   }
 
@@ -96,7 +97,8 @@ function resolveCountryInfo(rawCountry) {
     key: displayName.toLowerCase(),
     label,
     flag: fallbackFlag,
-    dial: ''
+    dial: '',
+    iso: isoMatch ? isoMatch[1].toUpperCase() : ''
   };
 }
 
@@ -508,11 +510,14 @@ async function fetchOtpViaApi(phone, orderId = '') {
 
 async function fetchNumberViaApi(service = '', countryKey = '') {
   if (!isApiReady()) return null;
+  const countryMeta = resolveCountryInfo(countryKey);
   const params = {
     service: service && service !== 'NXV Auto' ? service : 'WhatsApp'
   };
   if (countryKey && countryKey !== 'api_auto' && countryKey !== 'all') {
     params.country = countryKey;
+    if (countryMeta.iso) params.country_code = countryMeta.iso;
+    if (countryMeta.dial) params.dial_code = countryMeta.dial;
   }
 
   const endpoint = buildApiEndpoint('/get-number', params);
@@ -535,6 +540,16 @@ async function fetchNumberViaApi(service = '', countryKey = '') {
     orderId,
     raw: data
   };
+}
+
+function matchesExpectedCountry(phone, expectedCountryKey) {
+  if (!expectedCountryKey || expectedCountryKey === 'api_auto' || expectedCountryKey === 'all') {
+    return true;
+  }
+  const expectedInfo = resolveCountryInfo(expectedCountryKey);
+  const digits = String(phone || '').replace(/[^\d]/g, '');
+  if (!expectedInfo.dial) return true;
+  return digits.startsWith(expectedInfo.dial);
 }
 
 async function fetchBalanceViaApi() {
@@ -561,7 +576,8 @@ function detectCountryForPhone(phone) {
   if (matchedEntry) {
     return {
       key: matchedEntry.countryKey || resolveCountryInfo(matchedEntry.countryLabel).key,
-      label: matchedEntry.countryLabel || resolveCountryInfo(matchedEntry.countryKey).label
+      label: matchedEntry.countryLabel || resolveCountryInfo(matchedEntry.countryKey).label,
+      dial: matchedEntry.dial || resolveCountryInfo(matchedEntry.countryKey).dial
     };
   }
 
@@ -573,7 +589,8 @@ function detectCountryForPhone(phone) {
     if (found) {
       return {
         key: found.countryKey || resolveCountryInfo(found.countryLabel).key,
-        label: found.countryLabel || resolveCountryInfo(found.countryKey).label
+        label: found.countryLabel || resolveCountryInfo(found.countryKey).label,
+        dial: found.dial || resolveCountryInfo(found.countryKey).dial
       };
     }
   }
@@ -586,14 +603,16 @@ function detectCountryForPhone(phone) {
     if (cleanDigits.startsWith(c.dial)) {
       return {
         key: c.name.toLowerCase(),
-        label: `${c.flag} ${c.name} (${c.iso})`
+        label: `${c.flag} ${c.name} (${c.iso})`,
+        dial: c.dial
       };
     }
   }
 
   return {
     key: 'unknown',
-    label: '🌍 Unknown Country'
+    label: '🌍 Unknown Country',
+    dial: ''
   };
 }
 
@@ -1428,10 +1447,11 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       (e.countryKey || resolveCountryInfo(e.countryLabel).key) === countryKey
   );
 
+  const requestedMeta = resolveCountryInfo(countryKey);
   let picked = [];
-  let countryLabel = resolveCountryInfo(countryKey).label;
-  let flag = resolveCountryInfo(countryLabel).flag;
-  let apiErrorReason = '';
+  let countryLabel = requestedMeta.label;
+  let flag = requestedMeta.flag;
+  let noNumberMsg = '';
   let offset =
     typeof existingSess.offset === 'number' &&
     existingSess.service === service &&
@@ -1441,8 +1461,8 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
 
   if (pool.length) {
     const sampleMeta = pool[0];
-    countryLabel = sampleMeta.countryLabel || resolveCountryInfo(countryKey).label;
-    flag = sampleMeta.flag || resolveCountryInfo(countryLabel).flag;
+    countryLabel = sampleMeta.countryLabel || requestedMeta.label;
+    flag = sampleMeta.flag || requestedMeta.flag;
 
     if (options.advanceBatch) {
       offset = (offset + 3) % pool.length;
@@ -1476,36 +1496,46 @@ async function buildAssignedCard(userId, service, countryKey, options = {}) {
       try {
         const apiNum = await fetchNumberViaApi(service, countryKey === 'api_auto' ? '' : countryKey);
         if (apiNum?.phone) {
-          const cInfo = detectCountryForPhone(apiNum.phone);
-          countryLabel = cInfo.label;
-          flag = cInfo.label.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] || '🌍';
-          picked = [
-            {
-              service,
-              countryKey: cInfo.key,
-              countryLabel,
-              flag,
-              dial: '',
-              phone: apiNum.phone,
-              source: 'api',
-              orderId: apiNum.orderId || null
-            }
-          ];
+          if (!matchesExpectedCountry(apiNum.phone, countryKey)) {
+            noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
+          } else {
+            const cInfo =
+              countryKey === 'api_auto'
+                ? detectCountryForPhone(apiNum.phone)
+                : {
+                    key: requestedMeta.key,
+                    label: requestedMeta.label,
+                    dial: requestedMeta.dial
+                  };
+            countryLabel = cInfo.label;
+            flag = cInfo.label.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] || requestedMeta.flag || '🌍';
+            picked = [
+              {
+                service,
+                countryKey: cInfo.key,
+                countryLabel,
+                flag,
+                dial: cInfo.dial || '',
+                phone: apiNum.phone,
+                source: 'api',
+                orderId: apiNum.orderId || null
+              }
+            ];
+          }
         } else {
-          apiErrorReason = 'API থেকে নম্বর ফিল্ড খালি এসেছে।';
+          noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
         }
       } catch (err) {
         console.error('[NXV GET-NUMBER ERR]:', err.response?.data || err.message);
-        const status = err.response?.status ? `HTTP ${err.response.status}` : '';
-        apiErrorReason = `${status} ${err.message}`.trim();
+        noNumberMsg = `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
       }
     }
   }
 
   if (!picked.length) {
-    const reasonText = apiErrorReason ? `\n🔍 কারণ: \`${apiErrorReason}\`` : '';
+    const statusMsg = noNumberMsg || `${requestedMeta.label} এর জন্য বর্তমানে প্যানেলে কোনো নম্বর নেই।`;
     return {
-      text: `⚠️ *${service}* (${countryKey}) এর কোনো নম্বর পাওয়া যায়নি।${reasonText}`,
+      text: `⚠️ *${service}* — ${statusMsg}`,
       markup: buildInlineMarkup([
         [inlineCbButton('🔵 Change Country', `chg_cnt_${encodeURIComponent(service)}`, 'primary')],
         [inlineCbButton('🔴 BACK TO SERVICE', 'back_srv_list', 'danger')]
