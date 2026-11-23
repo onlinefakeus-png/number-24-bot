@@ -99,6 +99,7 @@ const state = {
   otpStats: { total: 0, byCountry: {} },
   userSession: new Map(),
   lastBotBoardMsg: new Map(),
+  userBoardHistory: new Map(),
   waitingSupportFrom: new Set(),
   waitingRangeFrom: new Map(),
   adminWizard: new Map(),
@@ -300,10 +301,11 @@ async function rawEditMessageText(chatId, messageId, text, reply_markup = null) 
 }
 
 async function rawDeleteMessage(chatId, messageId) {
+  if (!chatId || !messageId) return null;
   try {
     return await bot.telegram.callApi('deleteMessage', {
       chat_id: chatId,
-      message_id: messageId
+      message_id: Number(messageId)
     });
   } catch (_) {
     return null;
@@ -374,29 +376,50 @@ function getAdminReplyKeyboard() {
   };
 }
 
+async function clearPreviousBoards(chatId, userId, keepMsgId = null) {
+  const key = `${chatId}_${userId}`;
+  const tracked = state.userBoardHistory.get(key) || [];
+  const lastMsg = state.lastBotBoardMsg.get(userId);
+  const allIds = [...new Set([...tracked, lastMsg].filter(Boolean))];
+
+  for (const mid of allIds) {
+    if (keepMsgId && Number(mid) === Number(keepMsgId)) continue;
+    await rawDeleteMessage(chatId, mid);
+  }
+  state.userBoardHistory.set(key, keepMsgId ? [Number(keepMsgId)] : []);
+  if (!keepMsgId) state.lastBotBoardMsg.delete(userId);
+}
+
 async function sendCleanBoard(ctx, text, reply_markup = null, preferEdit = false) {
   const chatId = ctx.chat?.id;
   const userId = ctx.from?.id;
   const activeMsgId = ctx.callbackQuery?.message?.message_id || null;
+  const incomingUserMsgId = ctx.message?.message_id || null;
   const defaultKb = getMainKeyboard(ADMIN_IDS.includes(Number(userId)));
   const finalMarkup = reply_markup || (!activeMsgId ? defaultKb : null);
 
-  const prevMsgId = state.lastBotBoardMsg.get(userId);
-  if (prevMsgId && prevMsgId !== activeMsgId) {
-    await rawDeleteMessage(chatId, prevMsgId);
-    state.lastBotBoardMsg.delete(userId);
+  if (incomingUserMsgId && chatId) {
+    await rawDeleteMessage(chatId, incomingUserMsgId);
   }
 
   if (activeMsgId && preferEdit && chatId) {
     try {
       const edited = await rawEditMessageText(chatId, activeMsgId, text, finalMarkup);
-      if (userId && edited?.message_id) state.lastBotBoardMsg.set(userId, edited.message_id);
+      if (userId && edited?.message_id) {
+        state.lastBotBoardMsg.set(userId, edited.message_id);
+        state.userBoardHistory.set(`${chatId}_${userId}`, [edited.message_id]);
+      }
       return edited;
     } catch (_) {}
   }
 
+  await clearPreviousBoards(chatId, userId, null);
+
   const sent = await rawSendMessage(chatId, text, finalMarkup);
-  if (userId && sent?.message_id) state.lastBotBoardMsg.set(userId, sent.message_id);
+  if (userId && sent?.message_id) {
+    state.lastBotBoardMsg.set(userId, sent.message_id);
+    state.userBoardHistory.set(`${chatId}_${userId}`, [sent.message_id]);
+  }
   return sent;
 }
 
@@ -863,6 +886,11 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
 }
 
 async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
+  if (ctx.message?.message_id && ctx.chat?.id) {
+    await rawDeleteMessage(ctx.chat.id, ctx.message.message_id);
+  }
+  await clearPreviousBoards(ctx.chat.id, ctx.from.id, null);
+
   const balData = await fetchPanelBalanceRaw();
   const balAmt = balData?.balance !== undefined ? balData.balance : 0;
   const currency = balData?.currency || 'BDT';
@@ -881,7 +909,12 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
     `• Range: \`${state.rangeGroupLink}\` (\`${state.rangeGroupId || 'No ID'}\`)\n` +
     `• Owner: \`${state.ownerContact}\``;
 
-  return rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
+  const sent = await rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
+  if (ctx.from?.id && sent?.message_id) {
+    state.lastBotBoardMsg.set(ctx.from.id, sent.message_id);
+    state.userBoardHistory.set(`${ctx.chat.id}_${ctx.from.id}`, [sent.message_id]);
+  }
+  return sent;
 }
 
 setInterval(async () => {
@@ -1125,7 +1158,7 @@ bot.hears('💠 ADMIN PANEL', async (ctx) => {
 bot.hears('⬅️ Main Menu', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.delete(ctx.from.id);
-  await rawSendMessage(ctx.chat.id, 'মূল মেনুতে ফিরে আসা হয়েছে।', getMainKeyboard(true));
+  await sendCleanBoard(ctx, 'মূল মেনুতে ফিরে আসা হয়েছে।', getMainKeyboard(true));
 });
 
 bot.hears('🧪 Test SMS', async (ctx) => {
@@ -1423,7 +1456,7 @@ if (SELF_URL) {
     if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
   await bot.launch();
-  console.log('Bot running with fixed Firebase PUT serialization and OTP Group ID support...');
+  console.log('Bot running with clean board & trigger message deletion...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
