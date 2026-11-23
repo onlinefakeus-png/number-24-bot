@@ -12,12 +12,12 @@ const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
 
 const PANEL_URLS = {
-  base: 'https://nxv-sms.vercel.app',
-  getNumber: 'https://nxv-sms.vercel.app/get-number',
-  getOtp: 'https://nxv-sms.vercel.app/get-otp',
-  activeRange: 'https://nxv-sms.vercel.app/active-rangre',
-  cancelNumber: 'https://nxv-sms.vercel.app/cancel-number',
-  balance: 'https://nxv-sms.vercel.app/balance'
+  base: '[https://nxv-sms.vercel.app](https://nxv-sms.vercel.app)',
+  getNumber: '[https://nxv-sms.vercel.app/get-number](https://nxv-sms.vercel.app/get-number)',
+  getOtp: '[https://nxv-sms.vercel.app/get-otp](https://nxv-sms.vercel.app/get-otp)',
+  activeRange: '[https://nxv-sms.vercel.app/active-rangre](https://nxv-sms.vercel.app/active-rangre)',
+  cancelNumber: '[https://nxv-sms.vercel.app/cancel-number](https://nxv-sms.vercel.app/cancel-number)',
+  balance: '[https://nxv-sms.vercel.app/balance](https://nxv-sms.vercel.app/balance)'
 };
 
 const DEFAULT_API_KEY = process.env.API_KEY || 'nxv_live_mwr98oy3_ypnnxbi7zjowac7m';
@@ -83,11 +83,11 @@ const state = {
   newNumberNotify: true,
   apiKey: DEFAULT_API_KEY,
   joinCheckEnabled: true,
-  mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/nhbdofficial',
+  mainGroupLink: process.env.MAIN_GROUP_LINK || '[https://t.me/nhbdofficial](https://t.me/nhbdofficial)',
   mainGroupId: process.env.MAIN_GROUP_ID || '',
-  otpGroupLink: process.env.OTP_GROUP_LINK || 'https://t.me/nhbdofficial',
+  otpGroupLink: process.env.OTP_GROUP_LINK || '[https://t.me/nhbdofficial](https://t.me/nhbdofficial)',
   otpGroupId: process.env.OTP_GROUP_ID || '',
-  rangeGroupLink: process.env.RANGE_GROUP_LINK || 'https://t.me/nhbdofficial',
+  rangeGroupLink: process.env.RANGE_GROUP_LINK || '[https://t.me/nhbdofficial](https://t.me/nhbdofficial)',
   rangeGroupId: process.env.RANGE_GROUP_ID || '',
   ownerContact: '@noobxvau',
   verifiedUsers: {},
@@ -328,7 +328,7 @@ function getMainKeyboard(isAdmin) {
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
 }
 
-function getAdminReplyKeyboard() {
+function getAdminPanelAsMainKeyboard() {
   return {
     keyboard: [
       [
@@ -494,11 +494,9 @@ async function sendJoinGateBoard(ctx, missingMain = true, missingOtp = true, pre
   rows.push([{ text: '✅ Verify ⋮⋮⋮⋮', callback_data: 'verify_groups', style: 'success' }]);
 
   const text =
-    `🟪 *JOIN VERIFICATION CARD* 🟪\n` +
-    `\`\`\`\n` +
-    `GET NUMBER চালু করতে ২টি গ্রুপে জয়েন করে Verify করুন\n` +
-    `${missingMain ? '❌ Main Group' : '✅ Main Group'}  |  ${missingOtp ? '❌ OTP Group' : '✅ OTP Group'}\n` +
-    `\`\`\``;
+    `🟪 *JOIN VERIFICATION BOARD* 🟪\n` +
+    `🟦 *GET NUMBER চালু করতে ২টি গ্রুপে জয়েন করে Verify করুন*\n` +
+    `🟩 ${missingMain ? '❌ Main Group' : '✅ Main Group'}  |  ${missingOtp ? '❌ OTP Group' : '✅ OTP Group'}`;
 
   return sendCleanBoard(ctx, text, { inline_keyboard: rows }, preferEdit);
 }
@@ -610,11 +608,9 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
 
   if (sendToUser && uid) {
     const userText =
-      `🟩 *OTP RECEIVED CARD* 🟩\n` +
-      `\`\`\`\n` +
-      `${item.flag} ${serviceName} : +${digits}\n` +
-      `CODE : ${formattedOtp}\n` +
-      `\`\`\``;
+      `🟩 *OTP RECEIVED BOARD* 🟩\n` +
+      `🟦 *${item.flag} ${serviceName}:* \`+${digits}\`\n` +
+      `🟨 *CODE:* \`${formattedOtp}\``;
     const userMarkup = {
       inline_keyboard: [
         [
@@ -644,20 +640,18 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   const rngCode = item.range && item.range !== 'auto' ? String(item.range) : digits.slice(0, 6);
 
   const groupText = state.shortMsgMode
-    ? `🟩 *OTP* 🟩 \`${item.flag} ${item.countryName} | +${digits} | ${formattedOtp}\``
-    : `🟩 *LIVE OTP CARD* 🟩\n` +
-      `\`\`\`\n` +
-      `${item.flag} ${item.countryName} [${shortTag}]\n` +
-      `#${item.countryIso} : +${digits}\n` +
-      `Prefix : ${prefix} | Range : #${rngCode}\n` +
-      `\`\`\``;
+    ? `🟩 *OTP* 🟩 ${item.flag} *${item.countryName}* \`+${digits}\` | \`${formattedOtp}\``
+    : `🟩 *LIVE OTP BOARD* 🟩\n` +
+      `🟦 *${item.flag} ${item.countryName}* 🟢 *${shortTag}*\n` +
+      `🟪 \`#${item.countryIso}\` *+${digits}*\n` +
+      `🟨 *Prefix:* \`${prefix}\` | *Range:* \`#${rngCode}\``;
 
   const grpButtons = [];
   if (state.mainGroupLink && /^https?:\/\//i.test(state.mainGroupLink)) {
     grpButtons.push({ text: '📢 Channel ⋮⋮⋮⋮', url: state.mainGroupLink, style: 'primary' });
   }
   if (bot.botInfo?.username) {
-    grpButtons.push({ text: '🤖 Bot Link ⋮⋮⋮⋮', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
+    grpButtons.push({ text: '🤖 Bot Link ⋮⋮⋮⋮', url: `[https://t.me/$](https://t.me/$){bot.botInfo.username}`, style: 'success' });
   }
 
   try {
@@ -714,13 +708,12 @@ async function sendNewNumberNotificationToUsers(entry) {
   if (!state.newNumberNotify || !state.users.length) return;
 
   const text =
-    `🟧 *NEW NUMBER CARD* 🟧\n` +
-    `\`\`\`\n` +
-    `Service : ${entry.service}\n` +
-    `Country : ${entry.countryLabel}\n` +
-    `Range   : ${entry.range}\n` +
-    (entry.phone ? `Number  : ${entry.phone}\n` : '') +
-    `\`\`\``;
+    `🟧 *NEW NUMBER NOTIFICATION* 🟧\n` +
+    `🟦 *Service:* *${entry.service}*\n` +
+    `🟩 *Country:* *${entry.countryLabel}*\n` +
+    `🟨 *Range:* \`${entry.range}\`` +
+    (entry.phone ? `\n🟪 *Number:* \`${entry.phone}\`` : '') +
+    `\n🟩 *নতুন নম্বর যুক্ত হয়েছে! এখনই GET NUMBER চাপুন।*`;
 
   for (const uid of state.users) {
     try {
@@ -763,7 +756,7 @@ setInterval(async () => {
   } catch (err) {
     console.error('[NEW-NUM WATCH ERR]:', err.message);
   }
-}, 15000);
+}, 10000);
 
 function buildNumberCard(sess, otp = null) {
   const item = sess.item;
@@ -853,10 +846,8 @@ async function openServiceMenu(ctx, preferEdit = false) {
   }
 
   const boardText =
-    `🟦 *SERVICE SELECTOR CARD* 🟦\n` +
-    `\`\`\`\n` +
-    `Select a Service ⋮⋮⋮⋮\n` +
-    `\`\`\``;
+    `🟦 *SERVICE SELECTOR BOARD* 🟦\n` +
+    `🟩 *Select a Service* ⋮⋮⋮⋮`;
 
   return sendCleanBoard(ctx, boardText, { inline_keyboard: rows }, preferEdit);
 }
@@ -902,10 +893,8 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
   rows.push([{ text: '⬅️ Back to Services ⋮⋮⋮⋮', callback_data: 'back_services', style: 'danger' }]);
 
   const boardText =
-    `🟩 *COUNTRY SELECTOR CARD* 🟩\n` +
-    `\`\`\`\n` +
-    `${cleanService} — Select Country ⋮⋮⋮⋮\n` +
-    `\`\`\``;
+    `🟩 *COUNTRY SELECTOR BOARD* 🟩\n` +
+    `🟦 *${cleanService} — Select Country* ⋮⋮⋮⋮`;
 
   return sendCleanBoard(ctx, boardText, { inline_keyboard: rows }, preferEdit);
 }
@@ -924,113 +913,23 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   const totalOtps = balData?.totalOtps !== undefined ? balData.totalOtps : state.otpStats.total;
 
   const text =
-    (statusNote ? `🟨 *STATUS CARD* 🟨\n\`\`\`\n${statusNote}\n\`\`\`\n` : '') +
-    `🟦 *ADMIN CONTROL CARD* 🟦\n` +
-    `\`\`\`\n` +
-    `Users    : ${state.users.length} | Numbers : ${totalNums} | OTPs : ${totalOtps}\n` +
-    `Balance  : ৳${balAmt} (${currency}) | Rate : ৳${state.rewardEnabled ? rate : 0}\n` +
-    `API Key  : ${maskApiKey(getApiKey())}\n` +
-    `Main     : ${state.mainGroupLink} (${state.mainGroupId || 'No ID'})\n` +
-    `OTP      : ${state.otpGroupLink} (${state.otpGroupId || 'No ID'})\n` +
-    `Range    : ${state.rangeGroupLink} (${state.rangeGroupId || 'No ID'})\n` +
-    `Owner    : ${state.ownerContact}\n` +
-    `\`\`\``;
+    (statusNote ? `🟨 *STATUS BOARD* 🟨\n🟩 *${statusNote}*\n\n` : '') +
+    `🟦 *ADMIN CONTROL BOARD* 🟦\n` +
+    `🟩 *Users:* *${state.users.length}* | *Numbers:* *${totalNums}* | *OTPs:* *${totalOtps}*\n` +
+    `🟪 *Balance:* *৳${balAmt}* (${currency}) | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
+    `🟨 *API Key:* \`${maskApiKey(getApiKey())}\`\n` +
+    `🟦 *Main:* \`${state.mainGroupLink}\` (\`${state.mainGroupId || 'No ID'}\`)\n` +
+    `🟩 *OTP:* \`${state.otpGroupLink}\` (\`${state.otpGroupId || 'No ID'}\`)\n` +
+    `🟪 *Range:* \`${state.rangeGroupLink}\` (\`${state.rangeGroupId || 'No ID'}\`)\n` +
+    `🟧 *Owner:* \`${state.ownerContact}\``;
 
-  const adminInlineCard = {
-    inline_keyboard: [
-      [
-        { text: '🧪 Test SMS ⋮⋮⋮⋮', callback_data: 'adm_card_test_sms', style: 'success' },
-        { text: '👥 Stats ⋮⋮⋮⋮', callback_data: 'adm_card_stats', style: 'primary' }
-      ],
-      [
-        { text: '🧪 Balance API ⋮⋮⋮⋮', callback_data: 'adm_card_bal', style: 'success' },
-        { text: '📡 Range API ⋮⋮⋮⋮', callback_data: 'adm_card_rng', style: 'primary' }
-      ]
-    ]
-  };
-
-  const sent = await rawSendMessage(ctx.chat.id, text, adminInlineCard);
+  const sent = await rawSendMessage(ctx.chat.id, text, getAdminPanelAsMainKeyboard());
   if (ctx.from?.id && sent?.message_id) {
     state.lastBotBoardMsg.set(ctx.from.id, sent.message_id);
     state.userBoardHistory.set(`${ctx.chat.id}_${ctx.from.id}`, [sent.message_id]);
   }
   return sent;
 }
-
-bot.action('adm_card_test_sms', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const sampleItem = {
-    service: 'Telegram',
-    range: '22879',
-    phone: '+22879410829',
-    countryName: 'Togo',
-    countryIso: 'TG',
-    flag: '🇹🇬'
-  };
-  const sent = await deliverOtpToUserAndGroup(ctx.from.id, sampleItem, '284915', {
-    sendToUser: false
-  });
-  await ctx.answerCbQuery(sent.ok ? 'Test SMS Sent!' : 'OTP Group ID missing');
-  await showAdminBoardInReplyMenu(
-    ctx,
-    sent.ok
-      ? `✅ Test SMS OTP গ্রুপ (${sent.target})-এ পাঠানো হয়েছে (Code: 284-915)`
-      : `⚠️ Test SMS পাঠানো যায়নি। কারণ: ${sent.reason}`
-  );
-});
-
-bot.action('adm_card_stats', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
-  const totalBal = Object.values(state.balances || {}).reduce((a, b) => a + Number(b || 0), 0).toFixed(2);
-  const text =
-    `🟦 *SYSTEM STATS CARD* 🟦\n` +
-    `\`\`\`\n` +
-    `Total Users       : ${state.users.length}\n` +
-    `Saved Numbers     : ${state.numberHistory.length}\n` +
-    `Total OTPs        : ${state.otpStats.total}\n` +
-    `User Balances Sum : ${state.rewardEnabled ? totalBal : 0}\n` +
-    `\`\`\``;
-  await sendCleanBoard(
-    ctx,
-    text,
-    { inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]] },
-    true
-  );
-});
-
-bot.action('adm_card_bal', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
-  const data = await fetchPanelBalanceRaw();
-  const preview = JSON.stringify(data || { error: 'No response' }, null, 2).slice(0, 1000);
-  await sendCleanBoard(
-    ctx,
-    `🟩 *BALANCE API CARD* 🟩\n\`\`\`json\n${preview}\n\`\`\``,
-    { inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]] },
-    true
-  );
-});
-
-bot.action('adm_card_rng', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
-  state.cachedRanges = null;
-  const list = await fetchActiveRanges();
-  const preview = JSON.stringify(list.slice(0, 5), null, 2).slice(0, 1000);
-  await sendCleanBoard(
-    ctx,
-    `🟪 *RANGE API CARD (${list.length})* 🟪\n\`\`\`json\n${preview}\n\`\`\``,
-    { inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]] },
-    true
-  );
-});
-
-bot.action('adm_card_back', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
-  await showAdminBoardInReplyMenu(ctx);
-});
 
 setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
@@ -1069,10 +968,8 @@ bot.start(async (ctx) => {
   }
 
   const welcomeText =
-    `🟩 *WELCOME CARD* 🟩\n` +
-    `\`\`\`\n` +
-    `স্বাগতম! নিচের মেনু থেকে অপশন বেছে নিন\n` +
-    `\`\`\``;
+    `🟩 *WELCOME BOARD* 🟩\n` +
+    `🟦 *স্বাগতম! নিচের মেনু থেকে অপশন বেছে নিন*`;
 
   await sendCleanBoard(ctx, welcomeText, getMainKeyboard(isAdmin));
 });
@@ -1132,7 +1029,7 @@ bot.action(/^ask_rng_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🟨 *CUSTOM RANGE CARD* 🟨\n\`\`\`\n${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: 22879)\n\`\`\``,
+    `🟨 *CUSTOM RANGE BOARD* 🟨\n🟦 *${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: \`22879\`)*`,
     {
       inline_keyboard: [[{ text: '❌ Cancel ⋮⋮⋮⋮', callback_data: 'cancel_rng_input', style: 'danger' }]]
     },
@@ -1160,7 +1057,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
-        `🟧 *NO NUMBER CARD* 🟧\n\`\`\`\n${cleanService} ${cleanRange !== 'auto' ? `(Range: ${cleanRange}) ` : ''}এর জন্য নম্বর পাওয়া যায়নি\n${res?.error ? `কারণ: ${res.error}` : ''}\n\`\`\``,
+        `🟧 *NO NUMBER BOARD* 🟧\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর জন্য নম্বর পাওয়া যায়নি\n${res?.error ? `🟨 *কারণ:* \`${res.error}\`` : ''}`,
         {
           inline_keyboard: [
             [{ text: '🔢 Set Range ⋮⋮⋮⋮', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }],
@@ -1184,7 +1081,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
       ctx,
-      `🟧 *PANEL ERROR CARD* 🟧\n\`\`\`\nপ্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে\n\`\`\``,
+      `🟧 *PANEL ERROR BOARD* 🟧\n🟦 *প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে*`,
       {
         inline_keyboard: [
           [{ text: '🔢 Set Range ⋮⋮⋮⋮', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
@@ -1233,12 +1130,10 @@ bot.hears(/^🟣 WALLET(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await registerUser(ctx.from.id);
   const bal = state.rewardEnabled ? Number(state.balances[String(ctx.from.id)] || 0) : 0;
   const walletText =
-    `🟪 *WALLET CARD* 🟪\n` +
-    `\`\`\`\n` +
-    `ID           : ${ctx.from.id}\n` +
-    `Balance      : ${bal}\n` +
-    `Min Withdraw : ${state.minWithdraw}\n` +
-    `\`\`\``;
+    `🟪 *WALLET BOARD* 🟪\n` +
+    `🟦 *ID:* \`${ctx.from.id}\`\n` +
+    `🟩 *Balance:* *${bal}*\n` +
+    `🟨 *Min Withdraw:* *${state.minWithdraw}*`;
   await sendCleanBoard(
     ctx,
     walletText,
@@ -1251,15 +1146,15 @@ bot.hears(/^🔵 TRAFFIC(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   const total = Number(state.otpStats.total || 0);
   const list = Object.values(state.otpStats.byCountry || {});
   const body = !total || !list.length
-    ? 'এখনো কোনো OTP আসেনি'
-    : `Total : ${total}\n` + list.map((x) => {
+    ? '🟩 *এখনো কোনো OTP আসেনি*'
+    : `🟨 *Total:* *${total}*\n` + list.map((x) => {
         const pct = ((Number(x.count || 0) / total) * 100).toFixed(1);
-        return `${x.label} : ${x.count}/${total} (${pct}%)`;
+        return `🟦 ${x.label}: *${x.count}/${total}* (*${pct}%*)`;
       }).join('\n');
 
   await sendCleanBoard(
     ctx,
-    `🟦 *TRAFFIC CARD* 🟦\n\`\`\`\n${body}\n\`\`\``,
+    `🟦 *TRAFFIC BOARD* 🟦\n${body}`,
     { inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'primary' }]] }
   );
 });
@@ -1268,12 +1163,12 @@ bot.hears(/^🟡 NUMBER FILE(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await registerUser(ctx.from.id);
   const myHist = state.numberHistory.filter((x) => String(x.uid) === String(ctx.from.id)).slice(0, 10);
   const body = !myHist.length
-    ? 'এখনো কোনো নম্বর হিস্ট্রি নেই'
-    : myHist.map((h, idx) => `${idx + 1}. ${h.service} | ${h.phone} (Range: ${h.range || 'auto'})`).join('\n');
+    ? '🟩 *এখনো কোনো নম্বর হিস্ট্রি নেই*'
+    : myHist.map((h, idx) => `🟦 ${idx + 1}. *${h.service}* | \`${h.phone}\` (Range: \`${h.range || 'auto'}\`)`).join('\n');
 
   await sendCleanBoard(
     ctx,
-    `🟨 *NUMBER FILE CARD* 🟨\n\`\`\`\n${body}\n\`\`\``,
+    `🟨 *NUMBER FILE BOARD* 🟨\n${body}`,
     { inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'success' }]] }
   );
 });
@@ -1283,8 +1178,8 @@ bot.hears(/^🩷 SUPPORT(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.waitingSupportFrom.add(ctx.from.id);
   await sendCleanBoard(
     ctx,
-    `🟪 *SUPPORT CARD* 🟪\n\`\`\`\nআপনার মেসেজটি লিখে পাঠান\n\`\`\``,
-    { inline_keyboard: [[{ text: '👤 Owner ⋮⋮⋮⋮', url: `https://t.me/${String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
+    `🟪 *SUPPORT BOARD* 🟪\n🟩 *আপনার মেসেজটি লিখে পাঠান*`,
+    { inline_keyboard: [[{ text: '👤 Owner ⋮⋮⋮⋮', url: `[https://t.me/$](https://t.me/$){String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
   );
 });
 
@@ -1298,7 +1193,7 @@ bot.hears(/^⬅️ Main Menu(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.adminWizard.delete(ctx.from.id);
   await sendCleanBoard(
     ctx,
-    `🟩 *MAIN MENU CARD* 🟩\n\`\`\`\nমূল মেনুতে ফিরে আসা হয়েছে\n\`\`\``,
+    `🟩 *MAIN MENU BOARD* 🟩\n🟦 *মূল মেনুতে ফিরে আসা হয়েছে*`,
     getMainKeyboard(true)
   );
 });
@@ -1376,25 +1271,19 @@ bot.hears(/^(?:🔒 Gate: ON|🔓 Gate: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) 
 bot.hears(/^🔑 API Key(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'key');
-  await sendCleanBoard(ctx, '🔑 *API KEY CARD* 🔑\n```\nনতুন API Token পাঠান\n```', {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, '🔑 *API KEY BOARD* 🔑\n🟦 *নতুন API Token পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^👤 Owner(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'owner');
-  await sendCleanBoard(ctx, '👤 *OWNER CARD* 👤\n```\nনতুন Owner ইউজারনেম পাঠান (@username)\n```', {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, '👤 *OWNER BOARD* 👤\n🟦 *নতুন Owner ইউজারনেম পাঠান (@username)*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📢 Main Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'main_grp');
-  await sendCleanBoard(ctx, '📢 *MAIN GROUP CARD* 📢\n```\nMain Group লিংক ও Chat ID পাঠান\n```', {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, '📢 *MAIN GROUP BOARD* 📢\n🟦 *Main Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1402,50 +1291,40 @@ bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.adminWizard.set(ctx.from.id, 'otp_grp');
   await sendCleanBoard(
     ctx,
-    '📩 *OTP GROUP CARD* 📩\n```\nOTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে Chat ID দিন)\n```',
-    { inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]] }
+    '📩 *OTP GROUP BOARD* 📩\n🟩 *OTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে Chat ID দিন)*',
+    getAdminPanelAsMainKeyboard()
   );
 });
 
 bot.hears(/^📡 Range Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'rng_grp');
-  await sendCleanBoard(ctx, '📡 *RANGE GROUP CARD* 📡\n```\nRange Group লিংক ও Chat ID পাঠান\n```', {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, '📡 *RANGE GROUP BOARD* 📡\n🟦 *Range Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📣 Broadcast(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'bcast');
-  await sendCleanBoard(ctx, '📣 *BROADCAST CARD* 📣\n```\nসব ইউজারকে পাঠানোর মেসেজ লিখুন\n```', {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, '📣 *BROADCAST BOARD* 📣\n🟨 *সব ইউজারকে পাঠানোর মেসেজ লিখুন*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^👥 Stats(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const totalBal = Object.values(state.balances || {}).reduce((a, b) => a + Number(b || 0), 0).toFixed(2);
   const text =
-    `🟦 *SYSTEM STATS CARD* 🟦\n` +
-    `\`\`\`\n` +
-    `Total Users       : ${state.users.length}\n` +
-    `Saved Numbers     : ${state.numberHistory.length}\n` +
-    `Total OTPs        : ${state.otpStats.total}\n` +
-    `User Balances Sum : ${state.rewardEnabled ? totalBal : 0}\n` +
-    `\`\`\``;
-  await sendCleanBoard(ctx, text, {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+    `🟦 *SYSTEM STATS BOARD* 🟦\n` +
+    `🟩 *Total Users:* *${state.users.length}*\n` +
+    `🟪 *Saved Numbers:* *${state.numberHistory.length}*\n` +
+    `🟨 *Total OTPs:* *${state.otpStats.total}*\n` +
+    `🟧 *User Balances Sum:* *${state.rewardEnabled ? totalBal : 0}*`;
+  await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^🧪 Balance API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const data = await fetchPanelBalanceRaw();
   const preview = JSON.stringify(data || { error: 'No response' }, null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `🧪 *GET /balance CARD* 🧪\n\`\`\`json\n${preview}\n\`\`\``, {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, `🧪 *GET /balance BOARD* 🧪\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1453,39 +1332,29 @@ bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.cachedRanges = null;
   const list = await fetchActiveRanges();
   const preview = JSON.stringify(list.slice(0, 5), null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `📡 *GET /active-rangre (${list.length}) CARD* 📡\n\`\`\`json\n${preview}\n\`\`\``, {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+  await sendCleanBoard(ctx, `📡 *GET /active-rangre (${list.length}) BOARD* 📡\n🟪 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^🔗 Endpoints(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const text =
-    `🟦 *ENDPOINTS CARD* 🟦\n` +
-    `\`\`\`\n` +
-    `Get Number    : ${PANEL_URLS.getNumber}\n` +
-    `Get OTP       : ${PANEL_URLS.getOtp}\n` +
-    `Active Range  : ${PANEL_URLS.activeRange}\n` +
-    `Cancel Number : ${PANEL_URLS.cancelNumber}\n` +
-    `Balance       : ${PANEL_URLS.balance}\n` +
-    `\`\`\``;
-  await sendCleanBoard(ctx, text, {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+    `🟦 *ENDPOINTS BOARD* 🟦\n` +
+    `🟩 *Get Number:* \`${PANEL_URLS.getNumber}\`\n` +
+    `🟪 *Get OTP:* \`${PANEL_URLS.getOtp}\`\n` +
+    `🟨 *Active Range:* \`${PANEL_URLS.activeRange}\`\n` +
+    `🟧 *Cancel Number:* \`${PANEL_URLS.cancelNumber}\`\n` +
+    `🟦 *Balance:* \`${PANEL_URLS.balance}\``;
+  await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^🛡️ Info(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const text =
-    `🟦 *BOT INFO CARD* 🟦\n` +
-    `\`\`\`\n` +
-    `Main Group : ${state.mainGroupLink}\n` +
-    `Owner      : ${state.ownerContact}\n` +
-    `Email      : mnshiddik11@gmail.com\n` +
-    `\`\`\``;
-  await sendCleanBoard(ctx, text, {
-    inline_keyboard: [[{ text: '⬅️ Back Admin Card ⋮⋮⋮⋮', callback_data: 'adm_card_back', style: 'primary' }]]
-  });
+    `🟦 *BOT INFO BOARD* 🟦\n` +
+    `🟩 *Main Group:* *${state.mainGroupLink}*\n` +
+    `🟪 *Owner:* *${state.ownerContact}*\n` +
+    `🟨 *Email:* \`mnshiddik11@gmail.com\``;
+  await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
 bot.on('text', async (ctx) => {
@@ -1498,7 +1367,7 @@ bot.on('text', async (ctx) => {
     state.waitingRangeFrom.delete(uid);
     const cleanRange = txt.replace(/[^\dA-Za-z_-]/g, '');
     if (!cleanRange) {
-      return sendCleanBoard(ctx, '🟧 *WARNING CARD* 🟧\n```\nসঠিক Range লিখুন\n```', {
+      return sendCleanBoard(ctx, '🟧 *WARNING BOARD* 🟧\n🟦 *সঠিক Range লিখুন*', {
         inline_keyboard: [[{ text: '🔢 Set Range ⋮⋮⋮⋮', callback_data: `ask_rng_${encodeURIComponent(service)}`, style: 'primary' }]]
       });
     }
@@ -1548,7 +1417,7 @@ bot.on('text', async (ctx) => {
       let sent = 0;
       for (const u of state.users) {
         try {
-          await rawSendMessage(u, `🟧 *ANNOUNCEMENT CARD* 🟧\n\`\`\`\n${txt}\n\`\`\``, getMainKeyboard(ADMIN_IDS.includes(Number(u))));
+          await rawSendMessage(u, `🟧 *ANNOUNCEMENT BOARD* 🟧\n🟦 *${txt}*`, getMainKeyboard(ADMIN_IDS.includes(Number(u))));
           sent++;
         } catch (_) {}
       }
@@ -1558,8 +1427,8 @@ bot.on('text', async (ctx) => {
 
   if (state.waitingSupportFrom.has(uid)) {
     state.waitingSupportFrom.delete(uid);
-    await rawSendMessage(SUPPORT_TARGET_ID, `📩 *SUPPORT FROM* \`${uid}\`\n\`\`\`\n${txt}\n\`\`\``);
-    return sendCleanBoard(ctx, '🟩 *SENT CARD* 🟩\n```\nমেসেজ সাপোর্টে পাঠানো হয়েছে\n```', {
+    await rawSendMessage(SUPPORT_TARGET_ID, `📩 *SUPPORT FROM* \`${uid}\`\n🟩 *${txt}*`);
+    return sendCleanBoard(ctx, '🟩 *SENT BOARD* 🟩\n🟦 *মেসেজ সাপোর্টে পাঠানো হয়েছে*', {
       inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'success' }]]
     });
   }
@@ -1628,7 +1497,7 @@ if (SELF_URL) {
     if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
   await bot.launch();
-  console.log('Bot running with inline card boards...');
+  console.log('Bot running with admin panel in main keyboard slot, color boards & new number alerts...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
