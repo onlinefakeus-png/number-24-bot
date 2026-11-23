@@ -12,12 +12,12 @@ const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
 
 const PANEL_URLS = {
-  base: '[https://nxv-sms.vercel.app](https://nxv-sms.vercel.app)',
-  getNumber: '[https://nxv-sms.vercel.app/get-number](https://nxv-sms.vercel.app/get-number)',
-  getOtp: '[https://nxv-sms.vercel.app/get-otp](https://nxv-sms.vercel.app/get-otp)',
-  activeRange: '[https://nxv-sms.vercel.app/active-rangre](https://nxv-sms.vercel.app/active-rangre)',
-  cancelNumber: '[https://nxv-sms.vercel.app/cancel-number](https://nxv-sms.vercel.app/cancel-number)',
-  balance: '[https://nxv-sms.vercel.app/balance](https://nxv-sms.vercel.app/balance)'
+  base: 'https://nxv-sms.vercel.app',
+  getNumber: 'https://nxv-sms.vercel.app/get-number',
+  getOtp: 'https://nxv-sms.vercel.app/get-otp',
+  activeRange: 'https://nxv-sms.vercel.app/active-rangre',
+  cancelNumber: 'https://nxv-sms.vercel.app/cancel-number',
+  balance: 'https://nxv-sms.vercel.app/balance'
 };
 
 const DEFAULT_API_KEY = process.env.API_KEY || 'nxv_live_mwr98oy3_ypnnxbi7zjowac7m';
@@ -83,11 +83,11 @@ const state = {
   newNumberNotify: true,
   apiKey: DEFAULT_API_KEY,
   joinCheckEnabled: true,
-  mainGroupLink: process.env.MAIN_GROUP_LINK || '[https://t.me/nhbdofficial](https://t.me/nhbdofficial)',
+  mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/nhbdofficial',
   mainGroupId: process.env.MAIN_GROUP_ID || '',
-  otpGroupLink: process.env.OTP_GROUP_LINK || '[https://t.me/nhbdofficial](https://t.me/nhbdofficial)',
+  otpGroupLink: process.env.OTP_GROUP_LINK || 'https://t.me/nhbdofficial',
   otpGroupId: process.env.OTP_GROUP_ID || '',
-  rangeGroupLink: process.env.RANGE_GROUP_LINK || '[https://t.me/nhbdofficial](https://t.me/nhbdofficial)',
+  rangeGroupLink: process.env.RANGE_GROUP_LINK || 'https://t.me/nhbdofficial',
   rangeGroupId: process.env.RANGE_GROUP_ID || '',
   ownerContact: '@noobxvau',
   verifiedUsers: {},
@@ -123,17 +123,34 @@ function isApiReady() {
 }
 
 function buildPanelUrl(endpointUrl, extraParams = {}) {
-  const url = new URL(endpointUrl);
+  const rawEndpoint = String(endpointUrl || '').trim();
+  const validEndpoint = /^https?:\/\//i.test(rawEndpoint)
+    ? rawEndpoint
+    : `${PANEL_URLS.base}/${rawEndpoint.replace(/^\/+/, '')}`;
+
   const merged = {
     api_key: getApiKey(),
     ...extraParams
   };
-  Object.entries(merged).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && String(v).trim() !== '') {
-      url.searchParams.set(k, String(v).trim());
-    }
-  });
-  return url.toString();
+
+  try {
+    const url = new URL(validEndpoint);
+    Object.entries(merged).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        url.searchParams.set(k, String(v).trim());
+      }
+    });
+    return url.toString();
+  } catch (_) {
+    const qs = new URLSearchParams();
+    Object.entries(merged).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        qs.set(k, String(v).trim());
+      }
+    });
+    const sep = validEndpoint.includes('?') ? '&' : '?';
+    return `${validEndpoint}${sep}${qs.toString()}`;
+  }
 }
 
 async function callPanel(endpointUrl, extraParams = {}, timeout = 10000) {
@@ -651,7 +668,7 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
     grpButtons.push({ text: '📢 Channel ⋮⋮⋮⋮', url: state.mainGroupLink, style: 'primary' });
   }
   if (bot.botInfo?.username) {
-    grpButtons.push({ text: '🤖 Bot Link ⋮⋮⋮⋮', url: `[https://t.me/$](https://t.me/$){bot.botInfo.username}`, style: 'success' });
+    grpButtons.push({ text: '🤖 Bot Link ⋮⋮⋮⋮', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
   }
 
   try {
@@ -1179,7 +1196,7 @@ bot.hears(/^🩷 SUPPORT(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await sendCleanBoard(
     ctx,
     `🟪 *SUPPORT BOARD* 🟪\n🟩 *আপনার মেসেজটি লিখে পাঠান*`,
-    { inline_keyboard: [[{ text: '👤 Owner ⋮⋮⋮⋮', url: `[https://t.me/$](https://t.me/$){String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
+    { inline_keyboard: [[{ text: '👤 Owner ⋮⋮⋮⋮', url: `https://t.me/${String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
   );
 });
 
@@ -1497,7 +1514,7 @@ if (SELF_URL) {
     if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
   await bot.launch();
-  console.log('Bot running with admin panel in main keyboard slot, color boards & new number alerts...');
+  console.log('Bot running with safe URL builder & error handling...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
