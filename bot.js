@@ -175,7 +175,7 @@ function resolveCountryInfo(rawInput) {
       key: byNameOrIso.iso.toLowerCase(),
       name: byNameOrIso.name,
       iso: byNameOrIso.iso,
-      label: `${byNameOrIso.flag} ${byNameOrIso.name} (${byNameOrIso.iso})`,
+      label: `${byNameOrIso.flag} ${byNameOrIso.name}`,
       flag: byNameOrIso.flag,
       dial: byNameOrIso.dial
     };
@@ -189,7 +189,7 @@ function resolveCountryInfo(rawInput) {
         key: c.iso.toLowerCase(),
         name: c.name,
         iso: c.iso,
-        label: `${c.flag} ${c.name} (${c.iso})`,
+        label: `${c.flag} ${c.name}`,
         flag: c.flag,
         dial: c.dial
       };
@@ -199,9 +199,9 @@ function resolveCountryInfo(rawInput) {
   const fallbackCode = digits.slice(0, 3) || 'N/A';
   return {
     key: `code_${fallbackCode}`,
-    name: `Country +${fallbackCode}`,
+    name: `Country ${fallbackCode}`,
     iso: 'XX',
-    label: `🌍 Country +${fallbackCode}`,
+    label: `🌍 Country ${fallbackCode}`,
     flag: '🌍',
     dial: ''
   };
@@ -504,14 +504,14 @@ async function sendJoinGateBoard(ctx, missingMain = true, missingOtp = true, pre
   const rows = [];
   if (hasValidGroupLinks()) {
     rows.push([
-      { text: '📢 Main Group ⋮⋮⋮⋮', url: state.mainGroupLink, style: 'primary' },
-      { text: '📩 OTP Group ⋮⋮⋮⋮', url: state.otpGroupLink, style: 'primary' }
+      { text: '📢 Main Group', url: state.mainGroupLink, style: 'primary' },
+      { text: '📩 OTP Group', url: state.otpGroupLink, style: 'primary' }
     ]);
   }
-  rows.push([{ text: '✅ Verify ⋮⋮⋮⋮', callback_data: 'verify_groups', style: 'success' }]);
+  rows.push([{ text: '✅ Verify', callback_data: 'verify_groups', style: 'success' }]);
 
   const text =
-    `🟪 *JOIN VERIFICATION BOARD* 🟪\n` +
+    `🟪 *JOIN VERIFICATION BOARD*\n` +
     `🟦 *GET NUMBER চালু করতে ২টি গ্রুপে জয়েন করে Verify করুন*\n` +
     `🟩 ${missingMain ? '❌ Main Group' : '✅ Main Group'}  |  ${missingOtp ? '❌ OTP Group' : '✅ OTP Group'}`;
 
@@ -572,7 +572,8 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
     return { error: d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
   }
 
-  const countryInfo = resolveCountryInfo(phone);
+  const rawCountryHint = d.country || d.countryName || d.data?.country || phone;
+  const countryInfo = resolveCountryInfo(rawCountryHint);
   return {
     service: cleanService,
     range: state.rangeEnabled && range && range !== 'auto' ? range : 'auto',
@@ -625,14 +626,14 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
 
   if (sendToUser && uid) {
     const userText =
-      `🟩 *OTP RECEIVED BOARD* 🟩\n` +
-      `🟦 *${item.flag} ${serviceName}:* \`+${digits}\`\n` +
+      `🟩 *OTP RECEIVED BOARD*\n` +
+      `🟦 *${item.flag} ${serviceName} (${item.countryName}):* \`+${digits}\`\n` +
       `🟨 *CODE:* \`${formattedOtp}\``;
     const userMarkup = {
       inline_keyboard: [
         [
           {
-            text: `📋 ${formattedOtp} ⋮⋮⋮⋮`,
+            text: `📋 ${formattedOtp}`,
             type: 'copy_text',
             copy_text: { text: formattedOtp },
             style: 'success'
@@ -658,17 +659,17 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
 
   const groupText = state.shortMsgMode
     ? `🟩 *OTP* 🟩 ${item.flag} *${item.countryName}* \`+${digits}\` | \`${formattedOtp}\``
-    : `🟩 *LIVE OTP BOARD* 🟩\n` +
+    : `🟩 *LIVE OTP BOARD*\n` +
       `🟦 *${item.flag} ${item.countryName}* 🟢 *${shortTag}*\n` +
       `🟪 \`#${item.countryIso}\` *+${digits}*\n` +
       `🟨 *Prefix:* \`${prefix}\` | *Range:* \`#${rngCode}\``;
 
   const grpButtons = [];
   if (state.mainGroupLink && /^https?:\/\//i.test(state.mainGroupLink)) {
-    grpButtons.push({ text: '📢 Channel ⋮⋮⋮⋮', url: state.mainGroupLink, style: 'primary' });
+    grpButtons.push({ text: '📢 Channel', url: state.mainGroupLink, style: 'primary' });
   }
   if (bot.botInfo?.username) {
-    grpButtons.push({ text: '🤖 Bot Link ⋮⋮⋮⋮', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
+    grpButtons.push({ text: '🤖 Bot Link', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
   }
 
   try {
@@ -695,7 +696,7 @@ async function extractPanelNewItems() {
     const srv = String(r.service || r.app || 'Number').trim() || 'Number';
     const rng = String(r.range || r.prefix || r.country || '').trim();
     const phone = normalizePhone(r.phoneNumber || r.number || r.phone || '');
-    const cInfo = resolveCountryInfo(phone || rng || r.country || '');
+    const cInfo = resolveCountryInfo(r.country || r.countryName || phone || rng || '');
 
     const hasRealNumber = Boolean(phone);
     const hasRealRange = Boolean(rng && !/x{2,}/i.test(rng));
@@ -725,7 +726,7 @@ async function sendNewNumberNotificationToUsers(entry) {
   if (!state.newNumberNotify || !state.users.length) return;
 
   const text =
-    `🟧 *NEW NUMBER NOTIFICATION* 🟧\n` +
+    `🟧 *NEW NUMBER NOTIFICATION*\n` +
     `🟦 *Service:* *${entry.service}*\n` +
     `🟩 *Country:* *${entry.countryLabel}*\n` +
     `🟨 *Range:* \`${entry.range}\`` +
@@ -775,7 +776,7 @@ setInterval(async () => {
   }
 }, 10000);
 
-function buildNumberCard(sess, otp = null) {
+function buildNumberCard(sess, otp = null, statusLine = '') {
   const item = sess.item;
   const serviceName = item.service || 'Telegram';
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
@@ -785,9 +786,10 @@ function buildNumberCard(sess, otp = null) {
       : `+${digits}`;
 
   const text =
-    `${item.flag} 🟢 *${serviceName} Number Assigned:*\n` +
-    `🌍 Country: *${item.countryLabel}*\n` +
+    `${item.flag} 🟢 *${serviceName} ${item.countryName}:*\n` +
+    `🌍 Country: *${item.countryName}*\n` +
     (item.range && item.range !== 'auto' ? `🔢 Range: \`${item.range}\`\n` : '') +
+    (statusLine ? `🟨 *${statusLine}*\n` : '') +
     `⏳ *Waiting for OTP....*` +
     (otp ? `\n✅ *OTP Received:* \`${formatDashedOtp(otp)}\`` : '');
 
@@ -797,6 +799,13 @@ function buildNumberCard(sess, otp = null) {
         text: `${item.flag} 📋 ${shownPhone}`,
         type: 'copy_text',
         copy_text: { text: shownPhone },
+        style: 'success'
+      }
+    ],
+    [
+      {
+        text: '🔐 Get Code',
+        callback_data: 'manual_get_code',
         style: 'success'
       }
     ],
@@ -842,6 +851,53 @@ function buildNumberCard(sess, otp = null) {
   return { text, reply_markup: { inline_keyboard: rows } };
 }
 
+async function handleGetCodeAction(ctx, preferEdit = true) {
+  const uid = ctx.from.id;
+  const sess = state.userSession.get(uid);
+  if (!sess?.item) {
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery('আগে একটি নম্বর নিন।', { show_alert: true });
+    }
+    return openServiceMenu(ctx, preferEdit);
+  }
+
+  try {
+    const otp = await requestOtpFromPanel(sess.item.orderId, sess.item.phone);
+    if (otp) {
+      sess.otpDelivered = true;
+      state.userSession.set(uid, sess);
+      await recordTraffic(sess.item.phone);
+
+      if (state.rewardEnabled && Number(state.otpReward) > 0) {
+        const curBal = Number(state.balances[String(uid)] || 0);
+        const nextBal = Number((curBal + Number(state.otpReward)).toFixed(2));
+        state.balances[String(uid)] = nextBal;
+        await dbPut(`balances/${uid}`, nextBal);
+      }
+
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery(`✅ Code: ${formatDashedOtp(otp)}`);
+      }
+      await deliverOtpToUserAndGroup(uid, sess.item, otp, { sendToUser: true });
+      const card = buildNumberCard(sess, otp, 'OTP পাওয়া গেছে!');
+      return sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
+    }
+
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery('⏳ এখনো OTP আসেনি, আবার চেষ্টা করুন।');
+    }
+    const card = buildNumberCard(sess, null, 'এখনো OTP আসেনি — আবার Get Code চাপুন।');
+    return sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
+  } catch (err) {
+    console.error('[GET-CODE ERR]:', err.response?.data || err.message);
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery('OTP আনতে সমস্যা হয়েছে।');
+    }
+    const card = buildNumberCard(sess, null, 'OTP সার্ভার থেকে কোড আনা যায়নি।');
+    return sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
+  }
+}
+
 async function openServiceMenu(ctx, preferEdit = false) {
   const ranges = await fetchActiveRanges();
   const servicesFromApi = [
@@ -854,17 +910,15 @@ async function openServiceMenu(ctx, preferEdit = false) {
   const rows = [];
   for (let i = 0; i < serviceList.length; i += 2) {
     const s1 = serviceList[i];
-    const row = [{ text: `✨ ${s1} ⋮⋮⋮⋮`, callback_data: `pick_srv_${encodeURIComponent(s1)}`, style: 'primary' }];
+    const row = [{ text: `✨ ${s1}`, callback_data: `pick_srv_${encodeURIComponent(s1)}`, style: 'primary' }];
     if (serviceList[i + 1]) {
       const s2 = serviceList[i + 1];
-      row.push({ text: `✨ ${s2} ⋮⋮⋮⋮`, callback_data: `pick_srv_${encodeURIComponent(s2)}`, style: 'primary' });
+      row.push({ text: `✨ ${s2}`, callback_data: `pick_srv_${encodeURIComponent(s2)}`, style: 'primary' });
     }
     rows.push(row);
   }
 
-  const boardText =
-    `🟦 *SERVICE SELECTOR BOARD* 🟦\n` +
-    `🟩 *Select a Service* ⋮⋮⋮⋮`;
+  const boardText = `📲 *Select a Service*`;
 
   return sendCleanBoard(ctx, boardText, { inline_keyboard: rows }, preferEdit);
 }
@@ -880,7 +934,7 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
   for (const r of matched) {
     const rawRange = String(r?.range || r?.country || r?.prefix || '').trim();
     if (!rawRange) continue;
-    const cInfo = resolveCountryInfo(rawRange);
+    const cInfo = resolveCountryInfo(r?.country || r?.countryName || rawRange);
     if (!seenCountries.has(cInfo.key)) {
       seenCountries.set(cInfo.key, { label: cInfo.label, range: rawRange });
     }
@@ -888,18 +942,18 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
 
   const countryList = [...seenCountries.values()];
   const rows = [
-    [{ text: '🌐 Auto Country ⋮⋮⋮⋮', callback_data: `get_num_${encodeURIComponent(cleanService)}__auto`, style: 'success' }]
+    [{ text: '🌐 Auto Country', callback_data: `get_num_${encodeURIComponent(cleanService)}__auto`, style: 'success' }]
   ];
 
   for (let i = 0; i < countryList.length; i += 2) {
     const c1 = countryList[i];
     const row = [
-      { text: `${c1.label} ⋮⋮⋮⋮`, callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c1.range)}`, style: 'primary' }
+      { text: `${c1.label}`, callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c1.range)}`, style: 'primary' }
     ];
     if (countryList[i + 1]) {
       const c2 = countryList[i + 1];
       row.push({
-        text: `${c2.label} ⋮⋮⋮⋮`,
+        text: `${c2.label}`,
         callback_data: `get_num_${encodeURIComponent(cleanService)}__${encodeURIComponent(c2.range)}`,
         style: 'primary'
       });
@@ -907,11 +961,9 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
     rows.push(row);
   }
 
-  rows.push([{ text: '⬅️ Back to Services ⋮⋮⋮⋮', callback_data: 'back_services', style: 'danger' }]);
+  rows.push([{ text: '⬅️ Back to Services', callback_data: 'back_services', style: 'danger' }]);
 
-  const boardText =
-    `🟩 *COUNTRY SELECTOR BOARD* 🟩\n` +
-    `🟦 *${cleanService} — Select Country* ⋮⋮⋮⋮`;
+  const boardText = `🌍 *${cleanService} — Select Country*`;
 
   return sendCleanBoard(ctx, boardText, { inline_keyboard: rows }, preferEdit);
 }
@@ -930,8 +982,8 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   const totalOtps = balData?.totalOtps !== undefined ? balData.totalOtps : state.otpStats.total;
 
   const text =
-    (statusNote ? `🟨 *STATUS BOARD* 🟨\n🟩 *${statusNote}*\n\n` : '') +
-    `🟦 *ADMIN CONTROL BOARD* 🟦\n` +
+    (statusNote ? `🟨 *STATUS BOARD*\n🟩 *${statusNote}*\n\n` : '') +
+    `🟦 *ADMIN CONTROL BOARD*\n` +
     `🟩 *Users:* *${state.users.length}* | *Numbers:* *${totalNums}* | *OTPs:* *${totalOtps}*\n` +
     `🟪 *Balance:* *৳${balAmt}* (${currency}) | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
     `🟨 *API Key:* \`${maskApiKey(getApiKey())}\`\n` +
@@ -973,6 +1025,16 @@ setInterval(async () => {
   }
 }, 4000);
 
+bot.command('getcode', async (ctx) => {
+  await registerUser(ctx.from.id);
+  await handleGetCodeAction(ctx, false);
+});
+
+bot.command('getnumber', async (ctx) => {
+  await registerUser(ctx.from.id);
+  await openServiceMenu(ctx, false);
+});
+
 bot.start(async (ctx) => {
   await registerUser(ctx.from.id);
   const isAdmin = ADMIN_IDS.includes(ctx.from.id);
@@ -985,7 +1047,7 @@ bot.start(async (ctx) => {
   }
 
   const welcomeText =
-    `🟩 *WELCOME BOARD* 🟩\n` +
+    `🟩 *WELCOME BOARD*\n` +
     `🟦 *স্বাগতম! নিচের মেনু থেকে অপশন বেছে নিন*`;
 
   await sendCleanBoard(ctx, welcomeText, getMainKeyboard(isAdmin));
@@ -1026,6 +1088,10 @@ bot.hears(/^🟢 GET NUMBER(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await openServiceMenu(ctx, false);
 });
 
+bot.action('manual_get_code', async (ctx) => {
+  await handleGetCodeAction(ctx, true);
+});
+
 bot.action(/^pick_srv_(.+)$/, async (ctx) => {
   const service = decodeURIComponent(ctx.match[1] || 'Telegram');
   await ctx.answerCbQuery();
@@ -1046,9 +1112,9 @@ bot.action(/^ask_rng_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🟨 *CUSTOM RANGE BOARD* 🟨\n🟦 *${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: \`22879\`)*`,
+    `🟨 *CUSTOM RANGE BOARD*\n🟦 *${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: \`22879\`)*`,
     {
-      inline_keyboard: [[{ text: '❌ Cancel ⋮⋮⋮⋮', callback_data: 'cancel_rng_input', style: 'danger' }]]
+      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'cancel_rng_input', style: 'danger' }]]
     },
     true
   );
@@ -1074,11 +1140,11 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
-        `🟧 *NO NUMBER BOARD* 🟧\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর জন্য নম্বর পাওয়া যায়নি\n${res?.error ? `🟨 *কারণ:* \`${res.error}\`` : ''}`,
+        `🟧 *NO NUMBER BOARD*\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর জন্য নম্বর পাওয়া যায়নি\n${res?.error ? `🟨 *কারণ:* \`${res.error}\`` : ''}`,
         {
           inline_keyboard: [
-            [{ text: '🔢 Set Range ⋮⋮⋮⋮', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }],
-            [{ text: '🌐 Change Country ⋮⋮⋮⋮', callback_data: `pick_srv_${encodeURIComponent(cleanService)}`, style: 'primary' }]
+            [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }],
+            [{ text: '🌐 Change Country', callback_data: `pick_srv_${encodeURIComponent(cleanService)}`, style: 'primary' }]
           ]
         },
         preferEdit
@@ -1098,10 +1164,10 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
       ctx,
-      `🟧 *PANEL ERROR BOARD* 🟧\n🟦 *প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে*`,
+      `🟧 *PANEL ERROR BOARD*\n🟦 *প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে*`,
       {
         inline_keyboard: [
-          [{ text: '🔢 Set Range ⋮⋮⋮⋮', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
+          [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
         ]
       },
       preferEdit
@@ -1147,14 +1213,14 @@ bot.hears(/^🟣 WALLET(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await registerUser(ctx.from.id);
   const bal = state.rewardEnabled ? Number(state.balances[String(ctx.from.id)] || 0) : 0;
   const walletText =
-    `🟪 *WALLET BOARD* 🟪\n` +
+    `🟪 *WALLET BOARD*\n` +
     `🟦 *ID:* \`${ctx.from.id}\`\n` +
     `🟩 *Balance:* *${bal}*\n` +
     `🟨 *Min Withdraw:* *${state.minWithdraw}*`;
   await sendCleanBoard(
     ctx,
     walletText,
-    { inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'success' }]] }
+    { inline_keyboard: [[{ text: '🟢 Get Number', callback_data: 'back_services', style: 'success' }]] }
   );
 });
 
@@ -1171,8 +1237,8 @@ bot.hears(/^🔵 TRAFFIC(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 
   await sendCleanBoard(
     ctx,
-    `🟦 *TRAFFIC BOARD* 🟦\n${body}`,
-    { inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'primary' }]] }
+    `🟦 *TRAFFIC BOARD*\n${body}`,
+    { inline_keyboard: [[{ text: '🟢 Get Number', callback_data: 'back_services', style: 'primary' }]] }
   );
 });
 
@@ -1181,12 +1247,12 @@ bot.hears(/^🟡 NUMBER FILE(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   const myHist = state.numberHistory.filter((x) => String(x.uid) === String(ctx.from.id)).slice(0, 10);
   const body = !myHist.length
     ? '🟩 *এখনো কোনো নম্বর হিস্ট্রি নেই*'
-    : myHist.map((h, idx) => `🟦 ${idx + 1}. *${h.service}* | \`${h.phone}\` (Range: \`${h.range || 'auto'}\`)`).join('\n');
+    : myHist.map((h, idx) => `🟦 ${idx + 1}. *${h.service}* (${h.country || ''}) | \`${h.phone}\` (Range: \`${h.range || 'auto'}\`)`).join('\n');
 
   await sendCleanBoard(
     ctx,
-    `🟨 *NUMBER FILE BOARD* 🟨\n${body}`,
-    { inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'success' }]] }
+    `🟨 *NUMBER FILE BOARD*\n${body}`,
+    { inline_keyboard: [[{ text: '🟢 Get Number', callback_data: 'back_services', style: 'success' }]] }
   );
 });
 
@@ -1195,8 +1261,8 @@ bot.hears(/^🩷 SUPPORT(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.waitingSupportFrom.add(ctx.from.id);
   await sendCleanBoard(
     ctx,
-    `🟪 *SUPPORT BOARD* 🟪\n🟩 *আপনার মেসেজটি লিখে পাঠান*`,
-    { inline_keyboard: [[{ text: '👤 Owner ⋮⋮⋮⋮', url: `https://t.me/${String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
+    `🟪 *SUPPORT BOARD*\n🟩 *আপনার মেসেজটি লিখে পাঠান*`,
+    { inline_keyboard: [[{ text: '👤 Owner', url: `https://t.me/${String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
   );
 });
 
@@ -1210,7 +1276,7 @@ bot.hears(/^⬅️ Main Menu(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.adminWizard.delete(ctx.from.id);
   await sendCleanBoard(
     ctx,
-    `🟩 *MAIN MENU BOARD* 🟩\n🟦 *মূল মেনুতে ফিরে আসা হয়েছে*`,
+    `🟩 *MAIN MENU BOARD*\n🟦 *মূল মেনুতে ফিরে আসা হয়েছে*`,
     getMainKeyboard(true)
   );
 });
@@ -1288,19 +1354,19 @@ bot.hears(/^(?:🔒 Gate: ON|🔓 Gate: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) 
 bot.hears(/^🔑 API Key(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'key');
-  await sendCleanBoard(ctx, '🔑 *API KEY BOARD* 🔑\n🟦 *নতুন API Token পাঠান*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '🔑 *API KEY BOARD*\n🟦 *নতুন API Token পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^👤 Owner(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'owner');
-  await sendCleanBoard(ctx, '👤 *OWNER BOARD* 👤\n🟦 *নতুন Owner ইউজারনেম পাঠান (@username)*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '👤 *OWNER BOARD*\n🟦 *নতুন Owner ইউজারনেম পাঠান (@username)*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📢 Main Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'main_grp');
-  await sendCleanBoard(ctx, '📢 *MAIN GROUP BOARD* 📢\n🟦 *Main Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '📢 *MAIN GROUP BOARD*\n🟦 *Main Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1308,7 +1374,7 @@ bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.adminWizard.set(ctx.from.id, 'otp_grp');
   await sendCleanBoard(
     ctx,
-    '📩 *OTP GROUP BOARD* 📩\n🟩 *OTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে Chat ID দিন)*',
+    '📩 *OTP GROUP BOARD*\n🟩 *OTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে Chat ID দিন)*',
     getAdminPanelAsMainKeyboard()
   );
 });
@@ -1316,20 +1382,20 @@ bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 bot.hears(/^📡 Range Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'rng_grp');
-  await sendCleanBoard(ctx, '📡 *RANGE GROUP BOARD* 📡\n🟦 *Range Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '📡 *RANGE GROUP BOARD*\n🟦 *Range Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📣 Broadcast(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'bcast');
-  await sendCleanBoard(ctx, '📣 *BROADCAST BOARD* 📣\n🟨 *সব ইউজারকে পাঠানোর মেসেজ লিখুন*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '📣 *BROADCAST BOARD*\n🟨 *সব ইউজারকে পাঠানোর মেসেজ লিখুন*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^👥 Stats(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const totalBal = Object.values(state.balances || {}).reduce((a, b) => a + Number(b || 0), 0).toFixed(2);
   const text =
-    `🟦 *SYSTEM STATS BOARD* 🟦\n` +
+    `🟦 *SYSTEM STATS BOARD*\n` +
     `🟩 *Total Users:* *${state.users.length}*\n` +
     `🟪 *Saved Numbers:* *${state.numberHistory.length}*\n` +
     `🟨 *Total OTPs:* *${state.otpStats.total}*\n` +
@@ -1341,7 +1407,7 @@ bot.hears(/^🧪 Balance API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const data = await fetchPanelBalanceRaw();
   const preview = JSON.stringify(data || { error: 'No response' }, null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `🧪 *GET /balance BOARD* 🧪\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, `🧪 *GET /balance BOARD*\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1349,28 +1415,28 @@ bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.cachedRanges = null;
   const list = await fetchActiveRanges();
   const preview = JSON.stringify(list.slice(0, 5), null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `📡 *GET /active-rangre (${list.length}) BOARD* 📡\n🟪 \`${preview}\``, getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, `📡 *GET /active-rangre (${list.length}) BOARD*\n🟪 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^🔗 Endpoints(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const text =
-    `🟦 *ENDPOINTS BOARD* 🟦\n` +
-    `🟩 *Get Number:* \`${PANEL_URLS.getNumber}\`\n` +
-    `🟪 *Get OTP:* \`${PANEL_URLS.getOtp}\`\n` +
-    `🟨 *Active Range:* \`${PANEL_URLS.activeRange}\`\n` +
-    `🟧 *Cancel Number:* \`${PANEL_URLS.cancelNumber}\`\n` +
-    `🟦 *Balance:* \`${PANEL_URLS.balance}\``;
+    `🔗 *API ENDPOINTS*\n\n` +
+    `• Get Number: ${PANEL_URLS.getNumber}\n` +
+    `• Get OTP: ${PANEL_URLS.getOtp}\n` +
+    `• Active Range: ${PANEL_URLS.activeRange}\n` +
+    `• Cancel Number: ${PANEL_URLS.cancelNumber}\n` +
+    `• Balance: ${PANEL_URLS.balance}`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^🛡️ Info(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const text =
-    `🟦 *BOT INFO BOARD* 🟦\n` +
-    `🟩 *Main Group:* *${state.mainGroupLink}*\n` +
-    `🟪 *Owner:* *${state.ownerContact}*\n` +
-    `🟨 *Email:* \`mnshiddik11@gmail.com\``;
+    `🛡️ *BOT INFO*\n\n` +
+    `• Main Group: ${state.mainGroupLink}\n` +
+    `• Owner: ${state.ownerContact}\n` +
+    `• Email: mnshiddik11@gmail.com`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
@@ -1379,13 +1445,17 @@ bot.on('text', async (ctx) => {
   await registerUser(uid);
   const txt = ctx.message.text.trim();
 
+  if (/^(?:::)?get\s*code$/i.test(txt)) {
+    return handleGetCodeAction(ctx, false);
+  }
+
   if (state.waitingRangeFrom.has(uid)) {
     const service = state.waitingRangeFrom.get(uid);
     state.waitingRangeFrom.delete(uid);
     const cleanRange = txt.replace(/[^\dA-Za-z_-]/g, '');
     if (!cleanRange) {
-      return sendCleanBoard(ctx, '🟧 *WARNING BOARD* 🟧\n🟦 *সঠিক Range লিখুন*', {
-        inline_keyboard: [[{ text: '🔢 Set Range ⋮⋮⋮⋮', callback_data: `ask_rng_${encodeURIComponent(service)}`, style: 'primary' }]]
+      return sendCleanBoard(ctx, '🟧 *WARNING BOARD*\n🟦 *সঠিক Range লিখুন*', {
+        inline_keyboard: [[{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(service)}`, style: 'primary' }]]
       });
     }
     return assignAndShowNumber(ctx, service, cleanRange, false);
@@ -1434,7 +1504,7 @@ bot.on('text', async (ctx) => {
       let sent = 0;
       for (const u of state.users) {
         try {
-          await rawSendMessage(u, `🟧 *ANNOUNCEMENT BOARD* 🟧\n🟦 *${txt}*`, getMainKeyboard(ADMIN_IDS.includes(Number(u))));
+          await rawSendMessage(u, `🟧 *ANNOUNCEMENT BOARD*\n🟦 *${txt}*`, getMainKeyboard(ADMIN_IDS.includes(Number(u))));
           sent++;
         } catch (_) {}
       }
@@ -1445,8 +1515,8 @@ bot.on('text', async (ctx) => {
   if (state.waitingSupportFrom.has(uid)) {
     state.waitingSupportFrom.delete(uid);
     await rawSendMessage(SUPPORT_TARGET_ID, `📩 *SUPPORT FROM* \`${uid}\`\n🟩 *${txt}*`);
-    return sendCleanBoard(ctx, '🟩 *SENT BOARD* 🟩\n🟦 *মেসেজ সাপোর্টে পাঠানো হয়েছে*', {
-      inline_keyboard: [[{ text: '🟢 Get Number ⋮⋮⋮⋮', callback_data: 'back_services', style: 'success' }]]
+    return sendCleanBoard(ctx, '🟩 *SENT BOARD*\n🟦 *মেসেজ সাপোর্টে পাঠানো হয়েছে*', {
+      inline_keyboard: [[{ text: '🟢 Get Number', callback_data: 'back_services', style: 'success' }]]
     });
   }
 });
@@ -1513,8 +1583,17 @@ if (SELF_URL) {
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
     if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
+
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'মূল মেনু চালু করুন' },
+      { command: 'getnumber', description: 'নতুন নম্বর নিন' },
+      { command: 'getcode', description: 'OTP কোড আনুন' }
+    ]);
+  } catch (_) {}
+
   await bot.launch();
-  console.log('Bot running with safe URL builder & error handling...');
+  console.log('Bot running with country names, Get Code action & clean boards...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
