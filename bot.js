@@ -3,7 +3,8 @@ const axios = require('axios');
 const http = require('http');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const FIREBASE_DB_URL = (process.env.FIREBASE_DB_URL || '').replace(/\/+$/, '');
+const RAW_FIREBASE_URL = String(process.env.FIREBASE_DB_URL || '').trim().replace(/\/+$/, '');
+const FIREBASE_DB_URL = /^https?:\/\/.+/i.test(RAW_FIREBASE_URL) ? RAW_FIREBASE_URL : '';
 const PORT = process.env.PORT || 10000;
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
 
@@ -210,13 +211,21 @@ function getServiceShortTag(service) {
   return String(service || 'OTP').slice(0, 3).toUpperCase();
 }
 
+function sanitizeFirebasePath(dbPath) {
+  return String(dbPath || '')
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+}
+
 async function dbGet(dbPath) {
   if (!FIREBASE_DB_URL) return null;
   try {
-    const res = await axios.get(`${FIREBASE_DB_URL}/${dbPath}.json`);
+    const safePath = sanitizeFirebasePath(dbPath);
+    const res = await axios.get(`${FIREBASE_DB_URL}/${safePath}.json`, { timeout: 8000 });
     return res.data;
   } catch (e) {
-    console.error('Firebase GET error:', e.message);
+    console.error('Firebase GET error:', e.response?.status || e.message);
     return null;
   }
 }
@@ -224,10 +233,15 @@ async function dbGet(dbPath) {
 async function dbPut(dbPath, data) {
   if (!FIREBASE_DB_URL) return false;
   try {
-    await axios.put(`${FIREBASE_DB_URL}/${dbPath}.json`, data);
+    const safePath = sanitizeFirebasePath(dbPath);
+    const body = JSON.stringify(data === undefined ? null : data);
+    await axios.put(`${FIREBASE_DB_URL}/${safePath}.json`, body, {
+      timeout: 8000,
+      headers: { 'Content-Type': 'application/json' }
+    });
     return true;
   } catch (e) {
-    console.error('Firebase PUT error:', e.message);
+    console.error('Firebase PUT error:', e.response?.status || e.message);
     return false;
   }
 }
@@ -246,7 +260,7 @@ async function registerUser(userId) {
   }
   if (state.balances[idStr] === undefined) {
     state.balances[idStr] = 0;
-    await dbPut(`balances/${encodeURIComponent(idStr)}`, 0);
+    await dbPut(`balances/${idStr}`, 0);
   }
 }
 
@@ -435,7 +449,7 @@ async function verifyUserInTwoGroups(userId) {
 
   if (mainRes === true && otpRes === true) {
     state.verifiedUsers[idStr] = true;
-    await dbPut(`verifiedUsers/${encodeURIComponent(idStr)}`, true);
+    await dbPut(`verifiedUsers/${idStr}`, true);
     return { ok: true, missingMain: false, missingOtp: false };
   }
 
@@ -589,7 +603,10 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
 
   const otpGroupTarget = String(state.otpGroupId || '').trim() || extractUsernameFromLink(state.otpGroupLink);
   if (!otpGroupTarget) {
-    return { ok: false, reason: 'OTP Group ID বা Username সেট করা নেই।' };
+    return {
+      ok: false,
+      reason: 'OTP Group ID বা Username সেট করা নেই (প্রাইভেট লিংক দিলে সাথে -100... Chat ID দিন)।'
+    };
   }
 
   const shortTag = getServiceShortTag(serviceName);
@@ -859,9 +876,9 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
     `• Users: *${state.users.length}* | Numbers: *${totalNums}* | OTPs: *${totalOtps}*\n` +
     `• Balance: *৳${balAmt}* (${currency}) | Rate: *৳${state.rewardEnabled ? rate : 0}*\n` +
     `• API Key: \`${maskApiKey(getApiKey())}\`\n` +
-    `• Main: \`${state.mainGroupLink}\`\n` +
-    `• OTP: \`${state.otpGroupLink}\`\n` +
-    `• Range: \`${state.rangeGroupLink}\`\n` +
+    `• Main: \`${state.mainGroupLink}\` (\`${state.mainGroupId || 'No ID'}\`)\n` +
+    `• OTP: \`${state.otpGroupLink}\` (\`${state.otpGroupId || 'No ID'}\`)\n` +
+    `• Range: \`${state.rangeGroupLink}\` (\`${state.rangeGroupId || 'No ID'}\`)\n` +
     `• Owner: \`${state.ownerContact}\``;
 
   return rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
@@ -922,7 +939,7 @@ bot.action('verify_groups', async (ctx) => {
   }
 
   state.verifiedUsers[idStr] = true;
-  await dbPut(`verifiedUsers/${encodeURIComponent(idStr)}`, true);
+  await dbPut(`verifiedUsers/${idStr}`, true);
   await ctx.answerCbQuery('✅ ভেরিফাই সফল হয়েছে!');
   await openServiceMenu(ctx, true);
 });
@@ -1111,7 +1128,6 @@ bot.hears('⬅️ Main Menu', async (ctx) => {
   await rawSendMessage(ctx.chat.id, 'মূল মেনুতে ফিরে আসা হয়েছে।', getMainKeyboard(true));
 });
 
-// Send a realistic sample OTP message to the OTP Group using the exact production format
 bot.hears('🧪 Test SMS', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const sampleItem = {
@@ -1203,7 +1219,11 @@ bot.hears('📢 Main Group', async (ctx) => {
 bot.hears('📩 OTP Group', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, 'otp_grp');
-  await rawSendMessage(ctx.chat.id, '📩 OTP Group লিংক ও Chat ID পাঠান (যেমন `https://t.me/group -100123456`):', getAdminReplyKeyboard());
+  await rawSendMessage(
+    ctx.chat.id,
+    '📩 OTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে অবশ্যই Chat ID দিন, যেমন `https://t.me/+xxxx -100123456`):',
+    getAdminReplyKeyboard()
+  );
 });
 
 bot.hears('📡 Range Group', async (ctx) => {
@@ -1403,7 +1423,7 @@ if (SELF_URL) {
     if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
   await bot.launch();
-  console.log('Bot running with Test SMS button for OTP Group...');
+  console.log('Bot running with fixed Firebase PUT serialization and OTP Group ID support...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
