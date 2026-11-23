@@ -312,6 +312,54 @@ function getMainKeyboard(isAdmin) {
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
 }
 
+function getAdminReplyKeyboard() {
+  return {
+    keyboard: [
+      [
+        { text: state.apiEnabled ? '🟢 API: ON' : '🔴 API: OFF', style: state.apiEnabled ? 'success' : 'danger' },
+        { text: state.rangeEnabled ? '🔢 Range: ON' : '🔢 Range: OFF', style: state.rangeEnabled ? 'success' : 'danger' }
+      ],
+      [
+        { text: state.rewardEnabled ? '💰 Reward: ON' : '⚪ Zero Mode', style: state.rewardEnabled ? 'success' : 'primary' },
+        { text: state.newNumberNotify ? '🔔 Alert: ON' : '🔕 Alert: OFF', style: state.newNumberNotify ? 'success' : 'danger' }
+      ],
+      [
+        { text: state.shortMsgMode ? '📝 Mode: Short' : '📄 Mode: Long', style: 'primary' },
+        { text: state.joinCheckEnabled ? '🔒 Gate: ON' : '🔓 Gate: OFF', style: state.joinCheckEnabled ? 'success' : 'danger' }
+      ],
+      [
+        { text: '🔑 API Key', style: 'primary' },
+        { text: '👤 Owner', style: 'primary' }
+      ],
+      [
+        { text: '📢 Main Group', style: 'primary' },
+        { text: '📩 OTP Group', style: 'primary' }
+      ],
+      [
+        { text: '📡 Range Group', style: 'primary' },
+        { text: '📣 Broadcast', style: 'success' }
+      ],
+      [
+        { text: '🧪 Test SMS', style: 'success' },
+        { text: '👥 Stats', style: 'primary' }
+      ],
+      [
+        { text: '🧪 Balance API', style: 'success' },
+        { text: '📡 Range API', style: 'success' }
+      ],
+      [
+        { text: '🔗 Endpoints', style: 'primary' },
+        { text: '🛡️ Info', style: 'primary' }
+      ],
+      [
+        { text: '⬅️ Main Menu', style: 'danger' }
+      ]
+    ],
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
+
 async function sendCleanBoard(ctx, text, reply_markup = null, preferEdit = false) {
   const chatId = ctx.chat?.id;
   const userId = ctx.from?.id;
@@ -515,60 +563,66 @@ async function recordTraffic(phone) {
   await dbPut('stats/otps', state.otpStats);
 }
 
-async function deliverOtpToUserAndGroup(uid, item, rawOtp) {
+async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
+  const { sendToUser = true } = options;
   const formattedOtp = formatDashedOtp(rawOtp);
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
   const serviceName = item.service || 'WhatsApp';
 
-  const userText = `${item.flag} *${serviceName}* \`${digits}\``;
-  const userMarkup = {
-    inline_keyboard: [
-      [
-        {
-          text: `📋 ${formattedOtp}`,
-          type: 'copy_text',
-          copy_text: { text: formattedOtp },
-          style: 'success'
-        }
+  if (sendToUser && uid) {
+    const userText = `${item.flag} *${serviceName}* \`${digits}\``;
+    const userMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: `📋 ${formattedOtp}`,
+            type: 'copy_text',
+            copy_text: { text: formattedOtp },
+            style: 'success'
+          }
+        ]
       ]
-    ]
-  };
+    };
 
-  await rawSendMessage(uid, userText, userMarkup);
+    await rawSendMessage(uid, userText, userMarkup);
+  }
 
   const otpGroupTarget = String(state.otpGroupId || '').trim() || extractUsernameFromLink(state.otpGroupLink);
-  if (otpGroupTarget) {
-    const shortTag = getServiceShortTag(serviceName);
-    const prefix = digits.slice(0, 4) || 'N/A';
-    const rngCode = item.range && item.range !== 'auto' ? String(item.range) : digits.slice(0, 6);
+  if (!otpGroupTarget) {
+    return { ok: false, reason: 'OTP Group ID বা Username সেট করা নেই।' };
+  }
 
-    const groupText = state.shortMsgMode
-      ? `${item.flag} *${item.countryName}* \`${digits}\` | \`${formattedOtp}\``
-      : `${item.flag} *${item.countryName}* 🟢 *${shortTag}*\n\n` +
-        `\`#${item.countryIso}\` *${digits}*\n` +
-        `Prefix: \`${prefix}\` | Range: \`#${rngCode}\``;
+  const shortTag = getServiceShortTag(serviceName);
+  const prefix = digits.slice(0, 4) || 'N/A';
+  const rngCode = item.range && item.range !== 'auto' ? String(item.range) : digits.slice(0, 6);
 
-    const grpButtons = [];
-    if (state.mainGroupLink && /^https?:\/\//i.test(state.mainGroupLink)) {
-      grpButtons.push({ text: '📢 Channel', url: state.mainGroupLink, style: 'primary' });
-    }
-    if (bot.botInfo?.username) {
-      grpButtons.push({ text: '🤖 Bot Link', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
-    }
+  const groupText = state.shortMsgMode
+    ? `${item.flag} *${item.countryName}* \`${digits}\` | \`${formattedOtp}\``
+    : `${item.flag} *${item.countryName}* 🟢 *${shortTag}*\n\n` +
+      `\`#${item.countryIso}\` *${digits}*\n` +
+      `Prefix: \`${prefix}\` | Range: \`#${rngCode}\``;
 
-    try {
-      await rawSendMessage(
-        otpGroupTarget,
-        groupText,
-        grpButtons.length ? { inline_keyboard: [grpButtons] } : null
-      );
-    } catch (e) {
-      console.error('[OTP GROUP SEND ERR]:', e.message);
-    }
+  const grpButtons = [];
+  if (state.mainGroupLink && /^https?:\/\//i.test(state.mainGroupLink)) {
+    grpButtons.push({ text: '📢 Channel', url: state.mainGroupLink, style: 'primary' });
+  }
+  if (bot.botInfo?.username) {
+    grpButtons.push({ text: '🤖 Bot Link', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
+  }
+
+  try {
+    await rawSendMessage(
+      otpGroupTarget,
+      groupText,
+      grpButtons.length ? { inline_keyboard: [grpButtons] } : null
+    );
+    return { ok: true, target: otpGroupTarget };
+  } catch (e) {
+    console.error('[OTP GROUP SEND ERR]:', e.message);
+    return { ok: false, reason: e.message };
   }
 }
 
-// Extract only genuinely newly added numbers or ranges from panel
 async function extractPanelNewItems() {
   if (!isApiReady()) return [];
   const entries = [];
@@ -791,8 +845,7 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
   return sendCleanBoard(ctx, `🌍 *${cleanService} — Select Country:*`, { inline_keyboard: rows }, preferEdit);
 }
 
-// Clean & polished Admin Control Panel
-async function renderAdminDashboard(ctx, preferEdit = false) {
+async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   const balData = await fetchPanelBalanceRaw();
   const balAmt = balData?.balance !== undefined ? balData.balance : 0;
   const currency = balData?.currency || 'BDT';
@@ -801,60 +854,17 @@ async function renderAdminDashboard(ctx, preferEdit = false) {
   const totalOtps = balData?.totalOtps !== undefined ? balData.totalOtps : state.otpStats.total;
 
   const text =
-    `⚙️ *ADMIN CONTROL CENTER*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `• *API:* ${state.apiEnabled ? '🟢 Active' : '🔴 Off'}  |  *Range:* ${state.rangeEnabled ? '🟢 On' : '🔴 Off'}\n` +
-    `• *Reward:* ${state.rewardEnabled ? '🟢 On' : '⚪ Zero'}  |  *Alert:* ${state.newNumberNotify ? '🔔 On' : '🔕 Off'}\n` +
-    `• *OTP Style:* \`${state.shortMsgMode ? 'Short' : 'Long'}\`  |  *Gate:* ${state.joinCheckEnabled ? '🔒 On' : '🔓 Off'}\n\n` +
-    `📊 *OVERVIEW*\n` +
-    `• Users: *${state.users.length}*  |  Numbers: *${totalNums}*  |  OTPs: *${totalOtps}*\n` +
-    `• Balance: *৳${balAmt}* (${currency})  |  Rate: *৳${state.rewardEnabled ? rate : 0}*\n` +
-    `• API Key: \`${maskApiKey(getApiKey())}\`\n\n` +
-    `🔗 *CHANNELS & OWNER*\n` +
+    (statusNote ? `${statusNote}\n\n` : '') +
+    `⚙️ *ADMIN BOARD*\n` +
+    `• Users: *${state.users.length}* | Numbers: *${totalNums}* | OTPs: *${totalOtps}*\n` +
+    `• Balance: *৳${balAmt}* (${currency}) | Rate: *৳${state.rewardEnabled ? rate : 0}*\n` +
+    `• API Key: \`${maskApiKey(getApiKey())}\`\n` +
     `• Main: \`${state.mainGroupLink}\`\n` +
     `• OTP: \`${state.otpGroupLink}\`\n` +
     `• Range: \`${state.rangeGroupLink}\`\n` +
     `• Owner: \`${state.ownerContact}\``;
 
-  const markup = {
-    inline_keyboard: [
-      [
-        { text: state.apiEnabled ? '🟢 API: ON' : '🔴 API: OFF', callback_data: 'adm_tgl_api', style: state.apiEnabled ? 'success' : 'danger' },
-        { text: state.rangeEnabled ? '🔢 Range: ON' : '🔢 Range: OFF', callback_data: 'adm_tgl_range', style: state.rangeEnabled ? 'success' : 'danger' }
-      ],
-      [
-        { text: state.rewardEnabled ? '💰 Reward: ON' : '⚪ Zero Mode', callback_data: 'adm_tgl_reward', style: state.rewardEnabled ? 'success' : 'primary' },
-        { text: state.newNumberNotify ? '🔔 Alert: ON' : '🔕 Alert: OFF', callback_data: 'adm_tgl_notify', style: state.newNumberNotify ? 'success' : 'danger' }
-      ],
-      [
-        { text: state.shortMsgMode ? '📝 Mode: Short' : '📄 Mode: Long', callback_data: 'adm_tgl_msg_mode', style: 'primary' },
-        { text: state.joinCheckEnabled ? '🔒 Gate: ON' : '🔓 Gate: OFF', callback_data: 'adm_tgl_join', style: state.joinCheckEnabled ? 'success' : 'danger' }
-      ],
-      [
-        { text: '🔑 API Key', callback_data: 'adm_set_key', style: 'primary' },
-        { text: '👤 Owner', callback_data: 'adm_set_owner', style: 'primary' }
-      ],
-      [
-        { text: '📢 Main Group', callback_data: 'adm_set_main_grp', style: 'primary' },
-        { text: '📩 OTP Group', callback_data: 'adm_set_otp_grp', style: 'primary' }
-      ],
-      [
-        { text: '📡 Range Group', callback_data: 'adm_set_rng_grp', style: 'primary' },
-        { text: '📣 Broadcast', callback_data: 'adm_bcast', style: 'success' }
-      ],
-      [
-        { text: '👥 Stats', callback_data: 'adm_users_stats', style: 'primary' },
-        { text: '🧪 Balance API', callback_data: 'adm_test_bal', style: 'success' },
-        { text: '📡 Range API', callback_data: 'adm_test_rng', style: 'success' }
-      ],
-      [
-        { text: '🔗 Endpoints', callback_data: 'adm_endpoints' },
-        { text: '🛡️ Info', callback_data: 'adm_community' }
-      ]
-    ]
-  };
-
-  return sendCleanBoard(ctx, text, markup, preferEdit);
+  return rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
 }
 
 setInterval(async () => {
@@ -874,7 +884,7 @@ setInterval(async () => {
           await dbPut(`balances/${uid}`, nextBal);
         }
 
-        await deliverOtpToUserAndGroup(uid, sess.item, otp);
+        await deliverOtpToUserAndGroup(uid, sess.item, otp, { sendToUser: true });
       }
     } catch (err) {
       console.error('[GET-OTP ERR]:', err.response?.data || err.message);
@@ -1092,67 +1102,124 @@ bot.hears('🩷 SUPPORT', async (ctx) => {
 
 bot.hears('💠 ADMIN PANEL', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await renderAdminDashboard(ctx, false);
+  await showAdminBoardInReplyMenu(ctx);
 });
 
-bot.action('adm_back', async (ctx) => {
+bot.hears('⬅️ Main Menu', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
-  await renderAdminDashboard(ctx, true);
+  state.adminWizard.delete(ctx.from.id);
+  await rawSendMessage(ctx.chat.id, 'মূল মেনুতে ফিরে আসা হয়েছে।', getMainKeyboard(true));
 });
 
-bot.action('adm_tgl_api', async (ctx) => {
+// Send a realistic sample OTP message to the OTP Group using the exact production format
+bot.hears('🧪 Test SMS', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  const sampleItem = {
+    service: 'Telegram',
+    range: '22879',
+    phone: '+22879410829',
+    countryName: 'Togo',
+    countryIso: 'TG',
+    flag: '🇹🇬'
+  };
+  const sent = await deliverOtpToUserAndGroup(ctx.from.id, sampleItem, '284915', {
+    sendToUser: false
+  });
+
+  if (sent.ok) {
+    await showAdminBoardInReplyMenu(
+      ctx,
+      `✅ *Test SMS* OTP গ্রুপ (\`${sent.target}\`)-এ পাঠানো হয়েছে (Code: \`284-915\`)।`
+    );
+  } else {
+    await showAdminBoardInReplyMenu(
+      ctx,
+      `⚠️ Test SMS পাঠানো যায়নি। কারণ: \`${sent.reason}\``
+    );
+  }
+});
+
+bot.hears(['🟢 API: ON', '🔴 API: OFF'], async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiEnabled = !state.apiEnabled;
   state.cachedRanges = null;
   await dbPut('config/apiUrlEnabled', state.apiEnabled);
-  await ctx.answerCbQuery(state.apiEnabled ? 'API ON' : 'API OFF');
-  await renderAdminDashboard(ctx, true);
+  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ API চালু হয়েছে।' : '⛔ API বন্ধ হয়েছে।');
 });
 
-bot.action('adm_tgl_range', async (ctx) => {
+bot.hears(['🔢 Range: ON', '🔢 Range: OFF'], async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.rangeEnabled = !state.rangeEnabled;
   await dbPut('config/rangeEnabled', state.rangeEnabled);
-  await ctx.answerCbQuery(state.rangeEnabled ? 'Range ON' : 'Range OFF');
-  await renderAdminDashboard(ctx, true);
+  await showAdminBoardInReplyMenu(ctx, state.rangeEnabled ? '✅ Range চালু হয়েছে।' : '⛔ Range বন্ধ হয়েছে।');
 });
 
-bot.action('adm_tgl_reward', async (ctx) => {
+bot.hears(['💰 Reward: ON', '⚪ Zero Mode'], async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.rewardEnabled = !state.rewardEnabled;
   await dbPut('config/rewardEnabled', state.rewardEnabled);
-  await ctx.answerCbQuery(state.rewardEnabled ? 'Reward ON' : 'Reward Zero');
-  await renderAdminDashboard(ctx, true);
+  await showAdminBoardInReplyMenu(ctx, state.rewardEnabled ? '✅ Reward চালু হয়েছে।' : '⚪ Zero Balance মোড সক্রিয়।');
 });
 
-bot.action('adm_tgl_notify', async (ctx) => {
+bot.hears(['🔔 Alert: ON', '🔕 Alert: OFF'], async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.newNumberNotify = !state.newNumberNotify;
   await dbPut('config/newNumberNotify', state.newNumberNotify);
-  await ctx.answerCbQuery(state.newNumberNotify ? 'Notify ON' : 'Notify OFF');
-  await renderAdminDashboard(ctx, true);
+  await showAdminBoardInReplyMenu(ctx, state.newNumberNotify ? '🔔 নতুন নম্বর Alert চালু।' : '🔕 নতুন নম্বর Alert বন্ধ।');
 });
 
-bot.action('adm_tgl_msg_mode', async (ctx) => {
+bot.hears(['📝 Mode: Short', '📄 Mode: Long'], async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.shortMsgMode = !state.shortMsgMode;
   await dbPut('config/shortMsgMode', state.shortMsgMode);
-  await ctx.answerCbQuery(state.shortMsgMode ? 'Short Msg Mode' : 'Long Msg Mode');
-  await renderAdminDashboard(ctx, true);
+  await showAdminBoardInReplyMenu(ctx, `✉️ OTP Group মেসেজ মোড: *${state.shortMsgMode ? 'Short' : 'Long'}*`);
 });
 
-bot.action('adm_tgl_join', async (ctx) => {
+bot.hears(['🔒 Gate: ON', '🔓 Gate: OFF'], async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.joinCheckEnabled = !state.joinCheckEnabled;
   await dbPut('config/joinCheckEnabled', state.joinCheckEnabled);
-  await ctx.answerCbQuery(state.joinCheckEnabled ? 'Join Gate ON' : 'Join Gate OFF');
-  await renderAdminDashboard(ctx, true);
+  await showAdminBoardInReplyMenu(ctx, state.joinCheckEnabled ? '🔒 Join Gate চালু।' : '🔓 Join Gate বন্ধ।');
 });
 
-bot.action('adm_users_stats', async (ctx) => {
+bot.hears('🔑 API Key', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
+  state.adminWizard.set(ctx.from.id, 'key');
+  await rawSendMessage(ctx.chat.id, '🔑 নতুন API Token পাঠান:', getAdminReplyKeyboard());
+});
+
+bot.hears('👤 Owner', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, 'owner');
+  await rawSendMessage(ctx.chat.id, '👤 নতুন Owner ইউজারনেম বা তথ্য পাঠান (যেমন `@username`):', getAdminReplyKeyboard());
+});
+
+bot.hears('📢 Main Group', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, 'main_grp');
+  await rawSendMessage(ctx.chat.id, '📢 Main Group লিংক ও Chat ID পাঠান (যেমন `https://t.me/group -100123456`):', getAdminReplyKeyboard());
+});
+
+bot.hears('📩 OTP Group', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, 'otp_grp');
+  await rawSendMessage(ctx.chat.id, '📩 OTP Group লিংক ও Chat ID পাঠান (যেমন `https://t.me/group -100123456`):', getAdminReplyKeyboard());
+});
+
+bot.hears('📡 Range Group', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, 'rng_grp');
+  await rawSendMessage(ctx.chat.id, '📡 Range Group লিংক ও Chat ID পাঠান (যেমন `https://t.me/rangegrp -100123456`):', getAdminReplyKeyboard());
+});
+
+bot.hears('📣 Broadcast', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, 'bcast');
+  await rawSendMessage(ctx.chat.id, '📣 সব ইউজারকে পাঠানোর মেসেজ লিখুন:', getAdminReplyKeyboard());
+});
+
+bot.hears('👥 Stats', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const totalBal = Object.values(state.balances || {}).reduce((a, b) => a + Number(b || 0), 0).toFixed(2);
   const text =
     `👥 *USERS & SYSTEM STATS*\n\n` +
@@ -1160,147 +1227,44 @@ bot.action('adm_users_stats', async (ctx) => {
     `• Saved Numbers: *${state.numberHistory.length}*\n` +
     `• Total OTPs: *${state.otpStats.total}*\n` +
     `• User Balances Sum: *${state.rewardEnabled ? totalBal : 0}*`;
-
-  await sendCleanBoard(
-    ctx,
-    text,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
+  await rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
 });
 
-bot.action('adm_set_key', async (ctx) => {
+bot.hears('🧪 Balance API', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'key');
-  await ctx.answerCbQuery();
-  await sendCleanBoard(ctx, '🔑 নতুন API Token পাঠান:', {
-    inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]]
-  }, true);
-});
-
-bot.action('adm_set_main_grp', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'main_grp');
-  await ctx.answerCbQuery();
-  await sendCleanBoard(
-    ctx,
-    '📢 Main Group লিংক পাঠান (চাইলে স্পেস দিয়ে Chat ID ও দিতে পারেন, যেমন `https://t.me/group -100123456`):',
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
-});
-
-bot.action('adm_set_otp_grp', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'otp_grp');
-  await ctx.answerCbQuery();
-  await sendCleanBoard(
-    ctx,
-    '📩 OTP Group লিংক পাঠান (চাইলে স্পেস দিয়ে Chat ID ও দিতে পারেন, যেমন `https://t.me/group -100123456`):',
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
-});
-
-bot.action('adm_set_rng_grp', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'rng_grp');
-  await ctx.answerCbQuery();
-  await sendCleanBoard(
-    ctx,
-    '📡 Range Group লিংক ও Chat ID পাঠান (যেমন `https://t.me/rangegrp -100123456`):',
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
-});
-
-bot.action('adm_set_owner', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'owner');
-  await ctx.answerCbQuery();
-  await sendCleanBoard(
-    ctx,
-    '👤 নতুন Owner ইউজারনেম বা তথ্য পাঠান (যেমন `@username`):',
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
-});
-
-bot.action('adm_bcast', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'bcast');
-  await ctx.answerCbQuery();
-  await sendCleanBoard(ctx, '📣 সব ইউজারকে পাঠানোর মেসেজ লিখুন:', {
-    inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back', style: 'danger' }]]
-  }, true);
-});
-
-bot.action('adm_test_bal', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery('Testing /balance...');
   const data = await fetchPanelBalanceRaw();
   const preview = JSON.stringify(data || { error: 'No response' }, null, 2).slice(0, 1200);
-  await sendCleanBoard(
-    ctx,
-    `🧪 *TERMINAL: GET /balance*\n\n\`\`\`json\n${preview}\n\`\`\``,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
+  await rawSendMessage(ctx.chat.id, `🧪 *GET /balance*\n\n\`\`\`json\n${preview}\n\`\`\``, getAdminReplyKeyboard());
 });
 
-bot.action('adm_test_rng', async (ctx) => {
+bot.hears('📡 Range API', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery('Testing /active-rangre...');
   state.cachedRanges = null;
   const list = await fetchActiveRanges();
   const preview = JSON.stringify(list.slice(0, 6), null, 2).slice(0, 1200);
-  await sendCleanBoard(
-    ctx,
-    `📡 *TERMINAL: GET /active-rangre*\nTotal Ranges: *${list.length}*\n\n\`\`\`json\n${preview}\n\`\`\``,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
+  await rawSendMessage(ctx.chat.id, `📡 *GET /active-rangre* (${list.length})\n\n\`\`\`json\n${preview}\n\`\`\``, getAdminReplyKeyboard());
 });
 
-bot.action('adm_endpoints', async (ctx) => {
+bot.hears('🔗 Endpoints', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
   const text =
-    `🔗 *TELEGRAM BOT API URLS*\n\n` +
-    `1️⃣ *Get Number:*\n\`${PANEL_URLS.getNumber}\`\n\n` +
-    `2️⃣ *Get OTP:*\n\`${PANEL_URLS.getOtp}\`\n\n` +
-    `3️⃣ *Active Range:*\n\`${PANEL_URLS.activeRange}\`\n\n` +
-    `4️⃣ *Cancel Number:*\n\`${PANEL_URLS.cancelNumber}\`\n\n` +
-    `5️⃣ *Check Balance:*\n\`${PANEL_URLS.balance}\``;
-
-  await sendCleanBoard(
-    ctx,
-    text,
-    { inline_keyboard: [[{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]] },
-    true
-  );
+    `🔗 *API ENDPOINTS*\n\n` +
+    `• Get Number: \`${PANEL_URLS.getNumber}\`\n` +
+    `• Get OTP: \`${PANEL_URLS.getOtp}\`\n` +
+    `• Active Range: \`${PANEL_URLS.activeRange}\`\n` +
+    `• Cancel Number: \`${PANEL_URLS.cancelNumber}\`\n` +
+    `• Balance: \`${PANEL_URLS.balance}\``;
+  await rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
 });
 
-bot.action('adm_community', async (ctx) => {
+bot.hears('🛡️ Info', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery();
   const text =
-    `🛡️ *এডমিন ও অফিসিয়াল কমিউনিটি*\n\n` +
-    `📢 Channel: *${state.mainGroupLink}*\n` +
-    `👨‍💻 Owner: *${state.ownerContact}*\n` +
-    `✉️ Email: \`mnshiddik11@gmail.com\``;
-
-  await sendCleanBoard(
-    ctx,
-    text,
-    {
-      inline_keyboard: [
-        [{ text: '📢 Official Channel', url: state.mainGroupLink, style: 'primary' }],
-        [{ text: '⬅️ Back to Panel', callback_data: 'adm_back', style: 'danger' }]
-      ]
-    },
-    true
-  );
+    `🛡️ *BOT & ADMIN INFO*\n\n` +
+    `• Main Group: *${state.mainGroupLink}*\n` +
+    `• Owner: *${state.ownerContact}*\n` +
+    `• Email: \`mnshiddik11@gmail.com\``;
+  await rawSendMessage(ctx.chat.id, text, getAdminReplyKeyboard());
 });
 
 bot.on('text', async (ctx) => {
@@ -1326,7 +1290,7 @@ bot.on('text', async (ctx) => {
       state.apiKey = txt;
       state.cachedRanges = null;
       await dbPut('config/apiKey', txt);
-      return rawSendMessage(ctx.chat.id, '✅ নতুন API Token সেট হয়েছে।', getMainKeyboard(true));
+      return showAdminBoardInReplyMenu(ctx, '✅ নতুন API Token সেট হয়েছে।');
     }
     if (mode === 'main_grp') {
       const parts = txt.split(/\s+/);
@@ -1334,7 +1298,7 @@ bot.on('text', async (ctx) => {
       if (parts[1]) state.mainGroupId = parts[1];
       await dbPut('config/mainGroupLink', state.mainGroupLink);
       if (parts[1]) await dbPut('config/mainGroupId', state.mainGroupId);
-      return rawSendMessage(ctx.chat.id, '✅ Main Group সেট হয়েছে।', getMainKeyboard(true));
+      return showAdminBoardInReplyMenu(ctx, '✅ Main Group সেট হয়েছে।');
     }
     if (mode === 'otp_grp') {
       const parts = txt.split(/\s+/);
@@ -1342,7 +1306,7 @@ bot.on('text', async (ctx) => {
       if (parts[1]) state.otpGroupId = parts[1];
       await dbPut('config/otpGroupLink', state.otpGroupLink);
       if (parts[1]) await dbPut('config/otpGroupId', state.otpGroupId);
-      return rawSendMessage(ctx.chat.id, '✅ OTP Group সেট হয়েছে।', getMainKeyboard(true));
+      return showAdminBoardInReplyMenu(ctx, '✅ OTP Group সেট হয়েছে।');
     }
     if (mode === 'rng_grp') {
       const parts = txt.split(/\s+/);
@@ -1350,12 +1314,12 @@ bot.on('text', async (ctx) => {
       if (parts[1]) state.rangeGroupId = parts[1];
       await dbPut('config/rangeGroupLink', state.rangeGroupLink);
       if (parts[1]) await dbPut('config/rangeGroupId', state.rangeGroupId);
-      return rawSendMessage(ctx.chat.id, '✅ Range Group সেট হয়েছে।', getMainKeyboard(true));
+      return showAdminBoardInReplyMenu(ctx, '✅ Range Group সেট হয়েছে।');
     }
     if (mode === 'owner') {
       state.ownerContact = txt;
       await dbPut('config/ownerContact', txt);
-      return rawSendMessage(ctx.chat.id, '✅ Owner তথ্য সেট হয়েছে।', getMainKeyboard(true));
+      return showAdminBoardInReplyMenu(ctx, '✅ Owner তথ্য সেট হয়েছে।');
     }
     if (mode === 'bcast') {
       let sent = 0;
@@ -1365,7 +1329,7 @@ bot.on('text', async (ctx) => {
           sent++;
         } catch (_) {}
       }
-      return rawSendMessage(ctx.chat.id, `✅ পাঠানো হয়েছে: *${sent}* জনকে।`, getMainKeyboard(true));
+      return showAdminBoardInReplyMenu(ctx, `✅ ব্রডকাস্ট পাঠানো হয়েছে: *${sent}* জনকে।`);
     }
   }
 
@@ -1439,7 +1403,7 @@ if (SELF_URL) {
     if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
   await bot.launch();
-  console.log('Bot running with deduplicated notifications and polished admin panel...');
+  console.log('Bot running with Test SMS button for OTP Group...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
