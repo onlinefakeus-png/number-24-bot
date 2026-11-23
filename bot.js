@@ -32,176 +32,46 @@ const COUNTRY_META = [
   { name: 'Afghanistan', iso: 'AF', dial: '93', flag: '🇦🇫' },
   { name: 'Albania', iso: 'AL', dial: '355', flag: '🇦🇱' },
   { name: 'Algeria', iso: 'DZ', dial: '213', flag: '🇩🇿' },
-  { name: 'Andorra', iso: 'AD', dial: '376', flag: '🇦🇩' },
-  { name: 'Angola', iso: 'AO', dial: '244', flag: '🇦🇴' },
   { name: 'Argentina', iso: 'AR', dial: '54', flag: '🇦🇷' },
   { name: 'Armenia', iso: 'AM', dial: '374', flag: '🇦🇲' },
-  { name: 'Australia', iso: 'AU', dial: '61', flag: '🇦🇺' },
-  { name: 'Austria', iso: 'AT', dial: '43', flag: '🇦🇹' },
-  { name: 'Azerbaijan', iso: 'AZ', dial: '994', flag: '🇦🇿' },
-  { name: 'Bahrain', iso: 'BH', dial: '973', flag: '🇧🇭' },
   { name: 'Bangladesh', iso: 'BD', dial: '880', flag: '🇧🇩' },
-  { name: 'Belarus', iso: 'BY', dial: '375', flag: '🇧🇾' },
-  { name: 'Belgium', iso: 'BE', dial: '32', flag: '🇧🇪' },
-  { name: 'Belize', iso: 'BZ', dial: '501', flag: '🇧🇿' },
-  { name: 'Benin', iso: 'BJ', dial: '229', flag: '🇧🇯' },
-  { name: 'Bhutan', iso: 'BT', dial: '975', flag: '🇧🇹' },
-  { name: 'Bolivia', iso: 'BO', dial: '591', flag: '🇧🇴' },
-  { name: 'Bosnia & Herzegovina', iso: 'BA', dial: '387', flag: '🇧🇦' },
-  { name: 'Botswana', iso: 'BW', dial: '267', flag: '🇧🇼' },
   { name: 'Brazil', iso: 'BR', dial: '55', flag: '🇧🇷' },
-  { name: 'Brunei', iso: 'BN', dial: '673', flag: '🇧🇳' },
-  { name: 'Bulgaria', iso: 'BG', dial: '359', flag: '🇧🇬' },
-  { name: 'Burkina Faso', iso: 'BF', dial: '226', flag: '🇧🇫' },
-  { name: 'Burundi', iso: 'BI', dial: '257', flag: '🇧🇮' },
   { name: 'Cambodia', iso: 'KH', dial: '855', flag: '🇰🇭' },
-  { name: 'Cameroon', iso: 'CM', dial: '237', flag: '🇨🇲' },
   { name: 'Canada', iso: 'CA', dial: '1', flag: '🇨🇦' },
-  { name: 'Central African Republic', iso: 'CF', dial: '236', flag: '🇨🇫' },
-  { name: 'Chad', iso: 'TD', dial: '235', flag: '🇹🇩' },
-  { name: 'Chile', iso: 'CL', dial: '56', flag: '🇨🇱' },
-  { name: 'China', iso: 'CN', dial: '86', flag: '🇨🇳' },
-  { name: 'Colombia', iso: 'CO', dial: '57', flag: '🇨🇴' },
-  { name: 'Comoros', iso: 'KM', dial: '269', flag: '🇰🇲' },
-  { name: 'Congo (DRC)', iso: 'CD', dial: '243', flag: '🇨🇩' },
-  { name: 'Congo (Republic)', iso: 'CG', dial: '242', flag: '🇨🇬' },
-  { name: 'Costa Rica', iso: 'CR', dial: '506', flag: '🇨🇷' },
   { name: "Côte d'Ivoire", iso: 'CI', dial: '225', flag: '🇨🇮' },
-  { name: 'Croatia', iso: 'HR', dial: '385', flag: '🇭🇷' },
-  { name: 'Cuba', iso: 'CU', dial: '53', flag: '🇨🇺' },
-  { name: 'Cyprus', iso: 'CY', dial: '357', flag: '🇨🇾' },
-  { name: 'Czechia', iso: 'CZ', dial: '420', flag: '🇨🇿' },
-  { name: 'Denmark', iso: 'DK', dial: '45', flag: '🇩🇰' },
-  { name: 'Djibouti', iso: 'DJ', dial: '253', flag: '🇩🇯' },
-  { name: 'Dominican Republic', iso: 'DO', dial: '1809', flag: '🇩🇴' },
-  { name: 'Ecuador', iso: 'EC', dial: '593', flag: '🇪🇨' },
   { name: 'Egypt', iso: 'EG', dial: '20', flag: '🇪🇬' },
-  { name: 'El Salvador', iso: 'SV', dial: '503', flag: '🇸🇻' },
-  { name: 'Equatorial Guinea', iso: 'GQ', dial: '240', flag: '🇬🇶' },
-  { name: 'Eritrea', iso: 'ER', dial: '291', flag: '🇪🇷' },
-  { name: 'Estonia', iso: 'EE', dial: '372', flag: '🇪🇪' },
-  { name: 'Eswatini', iso: 'SZ', dial: '268', flag: '🇸🇿' },
-  { name: 'Ethiopia', iso: 'ET', dial: '251', flag: '🇪🇹' },
-  { name: 'Fiji', iso: 'FJ', dial: '679', flag: '🇫🇯' },
-  { name: 'Finland', iso: 'FI', dial: '358', flag: '🇫🇮' },
   { name: 'France', iso: 'FR', dial: '33', flag: '🇫🇷' },
-  { name: 'Gabon', iso: 'GA', dial: '241', flag: '🇬🇦' },
-  { name: 'Gambia', iso: 'GM', dial: '220', flag: '🇬🇲' },
-  { name: 'Georgia', iso: 'GE', dial: '995', flag: '🇬🇪' },
   { name: 'Germany', iso: 'DE', dial: '49', flag: '🇩🇪' },
-  { name: 'Ghana', iso: 'GH', dial: '233', flag: '🇬🇭' },
-  { name: 'Greece', iso: 'GR', dial: '30', flag: '🇬🇷' },
-  { name: 'Guatemala', iso: 'GT', dial: '502', flag: '🇬🇹' },
   { name: 'Guinea', iso: 'GN', dial: '224', flag: '🇬🇳' },
   { name: 'Guinea-Bissau', iso: 'GW', dial: '245', flag: '🇬🇼' },
-  { name: 'Guyana', iso: 'GY', dial: '592', flag: '🇬🇾' },
-  { name: 'Haiti', iso: 'HT', dial: '509', flag: '🇭🇹' },
-  { name: 'Honduras', iso: 'HN', dial: '504', flag: '🇭🇳' },
-  { name: 'Hong Kong', iso: 'HK', dial: '852', flag: '🇭🇰' },
-  { name: 'Hungary', iso: 'HU', dial: '36', flag: '🇭🇺' },
-  { name: 'Iceland', iso: 'IS', dial: '354', flag: '🇮🇸' },
   { name: 'India', iso: 'IN', dial: '91', flag: '🇮🇳' },
   { name: 'Indonesia', iso: 'ID', dial: '62', flag: '🇮🇩' },
-  { name: 'Iran', iso: 'IR', dial: '98', flag: '🇮🇷' },
-  { name: 'Iraq', iso: 'IQ', dial: '964', flag: '🇮🇶' },
-  { name: 'Ireland', iso: 'IE', dial: '353', flag: '🇮🇪' },
-  { name: 'Israel', iso: 'IL', dial: '972', flag: '🇮🇱' },
-  { name: 'Italy', iso: 'IT', dial: '39', flag: '🇮🇹' },
-  { name: 'Jamaica', iso: 'JM', dial: '1876', flag: '🇯🇲' },
-  { name: 'Japan', iso: 'JP', dial: '81', flag: '🇯🇵' },
-  { name: 'Jordan', iso: 'JO', dial: '962', flag: '🇯🇴' },
-  { name: 'Kazakhstan', iso: 'KZ', dial: '7', flag: '🇰🇿' },
   { name: 'Kenya', iso: 'KE', dial: '254', flag: '🇰🇪' },
-  { name: 'Kuwait', iso: 'KW', dial: '965', flag: '🇰🇼' },
-  { name: 'Kyrgyzstan', iso: 'KG', dial: '996', flag: '🇰🇬' },
-  { name: 'Laos', iso: 'LA', dial: '856', flag: '🇱🇦' },
-  { name: 'Latvia', iso: 'LV', dial: '371', flag: '🇱🇻' },
-  { name: 'Lebanon', iso: 'LB', dial: '961', flag: '🇱🇧' },
-  { name: 'Lesotho', iso: 'LS', dial: '266', flag: '🇱🇸' },
-  { name: 'Liberia', iso: 'LR', dial: '231', flag: '🇱🇷' },
-  { name: 'Libya', iso: 'LY', dial: '218', flag: '🇱🇾' },
-  { name: 'Lithuania', iso: 'LT', dial: '370', flag: '🇱🇹' },
-  { name: 'Luxembourg', iso: 'LU', dial: '352', flag: '🇱🇺' },
-  { name: 'Macao', iso: 'MO', dial: '853', flag: '🇲🇴' },
   { name: 'Madagascar', iso: 'MG', dial: '261', flag: '🇲🇬' },
-  { name: 'Malawi', iso: 'MW', dial: '265', flag: '🇲🇼' },
   { name: 'Malaysia', iso: 'MY', dial: '60', flag: '🇲🇾' },
-  { name: 'Maldives', iso: 'MV', dial: '960', flag: '🇲🇻' },
   { name: 'Mali', iso: 'ML', dial: '223', flag: '🇲🇱' },
-  { name: 'Malta', iso: 'MT', dial: '356', flag: '🇲🇹' },
-  { name: 'Mauritania', iso: 'MR', dial: '222', flag: '🇲🇷' },
-  { name: 'Mauritius', iso: 'MU', dial: '230', flag: '🇲🇺' },
   { name: 'Mexico', iso: 'MX', dial: '52', flag: '🇲🇽' },
-  { name: 'Moldova', iso: 'MD', dial: '373', flag: '🇲🇩' },
-  { name: 'Mongolia', iso: 'MN', dial: '976', flag: '🇲🇳' },
   { name: 'Montenegro', iso: 'ME', dial: '382', flag: '🇲🇪' },
   { name: 'Morocco', iso: 'MA', dial: '212', flag: '🇲🇦' },
-  { name: 'Mozambique', iso: 'MZ', dial: '258', flag: '🇲🇿' },
-  { name: 'Myanmar', iso: 'MM', dial: '95', flag: '🇲🇲' },
-  { name: 'Namibia', iso: 'NA', dial: '264', flag: '🇳🇦' },
   { name: 'Nepal', iso: 'NP', dial: '977', flag: '🇳🇵' },
-  { name: 'Netherlands', iso: 'NL', dial: '31', flag: '🇳🇱' },
-  { name: 'New Zealand', iso: 'NZ', dial: '64', flag: '🇳🇿' },
-  { name: 'Nicaragua', iso: 'NI', dial: '505', flag: '🇳🇮' },
-  { name: 'Niger', iso: 'NE', dial: '227', flag: '🇳🇪' },
   { name: 'Nigeria', iso: 'NG', dial: '234', flag: '🇳🇬' },
-  { name: 'North Korea', iso: 'KP', dial: '850', flag: '🇰🇵' },
-  { name: 'North Macedonia', iso: 'MK', dial: '389', flag: '🇲🇰' },
-  { name: 'Norway', iso: 'NO', dial: '47', flag: '🇳🇴' },
-  { name: 'Oman', iso: 'OM', dial: '968', flag: '🇴🇲' },
   { name: 'Pakistan', iso: 'PK', dial: '92', flag: '🇵🇰' },
-  { name: 'Palestine', iso: 'PS', dial: '970', flag: '🇵🇸' },
-  { name: 'Panama', iso: 'PA', dial: '507', flag: '🇵🇦' },
-  { name: 'Papua New Guinea', iso: 'PG', dial: '675', flag: '🇵🇬' },
-  { name: 'Paraguay', iso: 'PY', dial: '595', flag: '🇵🇾' },
-  { name: 'Peru', iso: 'PE', dial: '51', flag: '🇵🇪' },
   { name: 'Philippines', iso: 'PH', dial: '63', flag: '🇵🇭' },
   { name: 'Poland', iso: 'PL', dial: '48', flag: '🇵🇱' },
-  { name: 'Portugal', iso: 'PT', dial: '351', flag: '🇵🇹' },
-  { name: 'Qatar', iso: 'QA', dial: '974', flag: '🇶🇦' },
-  { name: 'Romania', iso: 'RO', dial: '40', flag: '🇷🇴' },
   { name: 'Russia', iso: 'RU', dial: '7', flag: '🇷🇺' },
-  { name: 'Rwanda', iso: 'RW', dial: '250', flag: '🇷🇼' },
   { name: 'Saint Pierre & Miquelon', iso: 'PM', dial: '508', flag: '🇵🇲' },
   { name: 'Saudi Arabia', iso: 'SA', dial: '966', flag: '🇸🇦' },
-  { name: 'Senegal', iso: 'SN', dial: '221', flag: '🇸🇳' },
-  { name: 'Serbia', iso: 'RS', dial: '381', flag: '🇷🇸' },
-  { name: 'Sierra Leone', iso: 'SL', dial: '232', flag: '🇸🇱' },
-  { name: 'Singapore', iso: 'SG', dial: '65', flag: '🇸🇬' },
-  { name: 'Slovakia', iso: 'SK', dial: '421', flag: '🇸🇰' },
-  { name: 'Slovenia', iso: 'SI', dial: '386', flag: '🇸🇮' },
-  { name: 'Somalia', iso: 'SO', dial: '252', flag: '🇸🇴' },
   { name: 'South Africa', iso: 'ZA', dial: '27', flag: '🇿🇦' },
-  { name: 'South Korea', iso: 'KR', dial: '82', flag: '🇰🇷' },
-  { name: 'South Sudan', iso: 'SS', dial: '211', flag: '🇸🇸' },
   { name: 'Spain', iso: 'ES', dial: '34', flag: '🇪🇸' },
-  { name: 'Sri Lanka', iso: 'LK', dial: '94', flag: '🇱🇰' },
   { name: 'Sudan', iso: 'SD', dial: '249', flag: '🇸🇩' },
-  { name: 'Suriname', iso: 'SR', dial: '597', flag: '🇸🇷' },
-  { name: 'Sweden', iso: 'SE', dial: '46', flag: '🇸🇪' },
-  { name: 'Switzerland', iso: 'CH', dial: '41', flag: '🇨🇭' },
-  { name: 'Syria', iso: 'SY', dial: '963', flag: '🇸🇾' },
-  { name: 'Taiwan', iso: 'TW', dial: '886', flag: '🇹🇼' },
-  { name: 'Tajikistan', iso: 'TJ', dial: '992', flag: '🇹🇯' },
-  { name: 'Tanzania', iso: 'TZ', dial: '255', flag: '🇹🇿' },
   { name: 'Thailand', iso: 'TH', dial: '66', flag: '🇹🇭' },
-  { name: 'Timor-Leste', iso: 'TL', dial: '670', flag: '🇹🇱' },
   { name: 'Togo', iso: 'TG', dial: '228', flag: '🇹🇬' },
-  { name: 'Tunisia', iso: 'TN', dial: '216', flag: '🇹🇳' },
   { name: 'Turkey', iso: 'TR', dial: '90', flag: '🇹🇷' },
-  { name: 'Turkmenistan', iso: 'TM', dial: '993', flag: '🇹🇲' },
-  { name: 'Uganda', iso: 'UG', dial: '256', flag: '🇺🇬' },
   { name: 'Ukraine', iso: 'UA', dial: '380', flag: '🇺🇦' },
   { name: 'United Arab Emirates', iso: 'AE', dial: '971', flag: '🇦🇪' },
   { name: 'United Kingdom', iso: 'GB', dial: '44', flag: '🇬🇧' },
   { name: 'United States', iso: 'US', dial: '1', flag: '🇺🇸' },
-  { name: 'Uruguay', iso: 'UY', dial: '598', flag: '🇺🇾' },
-  { name: 'Uzbekistan', iso: 'UZ', dial: '998', flag: '🇺🇿' },
-  { name: 'Venezuela', iso: 'VE', dial: '58', flag: '🇻🇪' },
-  { name: 'Vietnam', iso: 'VN', dial: '84', flag: '🇻🇳' },
-  { name: 'Yemen', iso: 'YE', dial: '967', flag: '🇾🇪' },
-  { name: 'Zambia', iso: 'ZM', dial: '260', flag: '🇿🇲' },
-  { name: 'Zimbabwe', iso: 'ZW', dial: '263', flag: '🇿🇼' }
+  { name: 'Vietnam', iso: 'VN', dial: '84', flag: '🇻🇳' }
 ];
 
 const state = {
@@ -217,10 +87,12 @@ const state = {
   minWithdraw: 50,
   users: [],
   balances: {},
+  numberHistory: [],
   otpStats: { total: 0, byCountry: {} },
   userSession: new Map(),
   lastBotBoardMsg: new Map(),
   waitingSupportFrom: new Set(),
+  waitingRangeFrom: new Map(), // userId -> serviceName
   adminWizard: new Map(),
   cachedRanges: null
 };
@@ -363,6 +235,20 @@ async function registerUser(userId) {
     state.balances[idStr] = 0;
     await dbPut(`balances/${encodeURIComponent(idStr)}`, 0);
   }
+}
+
+async function saveNumberToHistory(uid, item) {
+  const entry = {
+    uid: String(uid),
+    service: item.service,
+    range: item.range || 'auto',
+    phone: item.phone,
+    orderId: item.orderId || null,
+    country: item.countryLabel,
+    time: new Date().toISOString()
+  };
+  state.numberHistory = [entry, ...state.numberHistory.filter((x) => x.phone !== item.phone)].slice(0, 300);
+  await dbPut('history/numbers', state.numberHistory);
 }
 
 async function rawSendMessage(chatId, text, reply_markup = null) {
@@ -563,14 +449,14 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
 
   const d = res.data || {};
   if (d.success === false) {
-    return { error: d.error || d.message || 'এই দেশে বর্তমানে কোনো নম্বর নেই।' };
+    return { error: d.error || d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
   }
 
   const phone = normalizePhone(
     d.phoneNumber || d.number || d.phone || d.data?.phoneNumber || d.data?.number || ''
   );
   if (!phone) {
-    return { error: d.message || 'এই দেশে বর্তমানে কোনো নম্বর নেই।' };
+    return { error: d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
   }
 
   const countryInfo = resolveCountryInfo(phone);
@@ -578,7 +464,7 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
     service: cleanService,
     range: range && range !== 'auto' ? range : 'auto',
     phone,
-    orderId: d.orderId || d.order_id || d.data?.orderId || d.data?.order_id || null,
+    orderId: d.orderId || d.order_id || d.id || d.data?.orderId || d.data?.order_id || null,
     countryKey: countryInfo.key,
     countryName: countryInfo.name,
     countryIso: countryInfo.iso,
@@ -598,13 +484,27 @@ async function requestOtpFromPanel(orderId, phone) {
   console.log('[GET-OTP RESP]:', JSON.stringify(res.data));
 
   const d = res.data || {};
-  if (String(d.status || '').toUpperCase() === 'RECEIVED' && d.otp) {
-    return String(d.otp).trim();
+  const inner = d.data && typeof d.data === 'object' ? d.data : {};
+
+  const candidates = [
+    d.otp,
+    d.code,
+    d.sms,
+    d.message,
+    inner.otp,
+    inner.code,
+    inner.sms,
+    inner.message
+  ];
+
+  for (const val of candidates) {
+    if (!val) continue;
+    const str = String(val).trim();
+    if (/WAITING|PENDING|NO_SMS|NOT_READY|WAIT/i.test(str)) continue;
+    const match = str.match(/\b\d{4,8}\b/);
+    if (match) return match[0];
   }
-  if (d.otp && !/WAITING|PENDING|NO_SMS/i.test(String(d.otp))) {
-    const match = String(d.otp).match(/\b\d{4,8}\b/);
-    return match ? match[0] : null;
-  }
+
   return null;
 }
 
@@ -622,7 +522,6 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp) {
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
   const serviceName = item.service || 'WhatsApp';
 
-  // 1st image style: flag + Service + digits, then inline copy button with dashed OTP
   const userText = `${item.flag} *${serviceName}* \`${digits}\``;
   const userMarkup = {
     inline_keyboard: [
@@ -639,12 +538,11 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp) {
 
   await rawSendMessage(uid, userText, userMarkup);
 
-  // 2nd image style: pushed to OTP group if configured
   const otpGroupTarget = String(state.otpGroupId || '').trim() || extractUsernameFromLink(state.otpGroupLink);
   if (otpGroupTarget) {
     const shortTag = getServiceShortTag(serviceName);
     const prefix = digits.slice(0, 4) || 'N/A';
-    const rngCode = item.range && item.range !== 'auto' ? String(item.range).slice(0, 6) : digits.slice(0, 6);
+    const rngCode = item.range && item.range !== 'auto' ? String(item.range) : digits.slice(0, 6);
 
     const groupText =
       `${item.flag} *${item.countryName}* 🟢 *${shortTag}*\n\n` +
@@ -683,6 +581,7 @@ function buildNumberCard(sess, otp = null) {
   const text =
     `${item.flag} 🟢 *${serviceName} Number Assigned:*\n` +
     `🌍 Country: *${item.countryLabel}*\n` +
+    (item.range && item.range !== 'auto' ? `🔢 Range: \`${item.range}\`\n` : '') +
     `⏳ *Waiting for OTP....*` +
     (otp ? `\n✅ *OTP Received:* \`${formatDashedOtp(otp)}\`` : '');
 
@@ -712,6 +611,11 @@ function buildNumberCard(sess, otp = null) {
         text: '🔄 Change Number',
         callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`,
         style: 'danger'
+      },
+      {
+        text: '🔢 Set Range',
+        callback_data: `ask_rng_${encodeURIComponent(serviceName)}`,
+        style: 'primary'
       }
     ],
     [
@@ -808,7 +712,7 @@ async function renderAdminDashboard(ctx, preferEdit = false) {
   const balAmt = balData?.balance !== undefined ? balData.balance : 0;
   const currency = balData?.currency || 'BDT';
   const rate = balData?.perOtpRate !== undefined ? balData.perOtpRate : state.otpReward;
-  const totalNums = balData?.totalNumbers !== undefined ? balData.totalNumbers : 0;
+  const totalNums = balData?.totalNumbers !== undefined ? balData.totalNumbers : state.numberHistory.length;
   const totalOtps = balData?.totalOtps !== undefined ? balData.totalOtps : state.otpStats.total;
 
   const text =
@@ -936,24 +840,49 @@ bot.action('back_services', async (ctx) => {
   await openServiceMenu(ctx, true);
 });
 
-async function handleNumberReq(ctx, service, range) {
+// Single Range button from Number Card
+bot.action(/^ask_rng_(.+)$/, async (ctx) => {
+  const service = decodeURIComponent(ctx.match[1] || 'Telegram');
+  state.waitingRangeFrom.set(ctx.from.id, service);
+  await ctx.answerCbQuery();
+  await sendCleanBoard(
+    ctx,
+    `🔢 *${service}* এর জন্য যে **Range** চান সেটি লিখে পাঠান (যেমন: \`22879\` বা \`245955\`):`,
+    {
+      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'cancel_rng_input', style: 'danger' }]]
+    },
+    true
+  );
+});
+
+bot.action('cancel_rng_input', async (ctx) => {
+  state.waitingRangeFrom.delete(ctx.from.id);
+  await ctx.answerCbQuery('বাতিল করা হয়েছে');
+  const sess = state.userSession.get(ctx.from.id);
+  if (sess?.item) {
+    const card = buildNumberCard(sess, null);
+    return sendCleanBoard(ctx, card.text, card.reply_markup, true);
+  }
+  return openServiceMenu(ctx, true);
+});
+
+async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const cleanRange = String(range || 'auto').trim() || 'auto';
-  await ctx.answerCbQuery('নম্বর নেওয়া হচ্ছে...');
 
   try {
     const res = await requestNumberFromPanel(cleanService, cleanRange);
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
-        `⚠️ *${cleanService}* এর জন্য নম্বর পাওয়া যায়নি।\n${res?.error ? `কারণ: \`${res.error}\`` : ''}`,
+        `⚠️ *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর জন্য নম্বর পাওয়া যায়নি।\n${res?.error ? `কারণ: \`${res.error}\`` : ''}`,
         {
           inline_keyboard: [
-            [{ text: '🌍 Change Country', callback_data: `pick_srv_${encodeURIComponent(cleanService)}`, style: 'primary' }],
-            [{ text: '⬅️ Back to Services', callback_data: 'back_services', style: 'danger' }]
+            [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }],
+            [{ text: '🌐 Change Country', callback_data: `pick_srv_${encodeURIComponent(cleanService)}`, style: 'primary' }]
           ]
         },
-        true
+        preferEdit
       );
     }
     const sess = {
@@ -963,8 +892,9 @@ async function handleNumberReq(ctx, service, range) {
       otpDelivered: false
     };
     state.userSession.set(ctx.from.id, sess);
+    await saveNumberToHistory(ctx.from.id, res);
     const card = buildNumberCard(sess, null);
-    await sendCleanBoard(ctx, card.text, card.reply_markup, true);
+    await sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
   } catch (err) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
@@ -972,20 +902,22 @@ async function handleNumberReq(ctx, service, range) {
       '❌ প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে।',
       {
         inline_keyboard: [
-          [{ text: '🌍 Change Country', callback_data: `pick_srv_${encodeURIComponent(cleanService)}`, style: 'primary' }]
+          [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
         ]
       },
-      true
+      preferEdit
     );
   }
 }
 
 bot.action(/^get_num_(.+)__(.+)$/, async (ctx) => {
-  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
+  await ctx.answerCbQuery('নম্বর নেওয়া হচ্ছে...');
+  await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]), true);
 });
 
 bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
-  await handleNumberReq(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]));
+  await ctx.answerCbQuery('নম্বর পরিবর্তন হচ্ছে...');
+  await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]), true);
 });
 
 bot.action('toggle_auto_chk', async (ctx) => {
@@ -1037,13 +969,14 @@ bot.hears('🔵 TRAFFIC', async (ctx) => {
 
 bot.hears('🟡 NUMBER FILE', async (ctx) => {
   await registerUser(ctx.from.id);
-  const sess = state.userSession.get(ctx.from.id);
-  await sendCleanBoard(
-    ctx,
-    sess?.item
-      ? `🟡 *Active Number*\n\n• Service: *${sess.item.service}*\n• Country: *${sess.item.countryLabel}*\n• Number: \`${sess.item.phone}\`\n• Order ID: \`${sess.item.orderId || 'N/A'}\``
-      : '🟡 কোনো সক্রিয় নম্বর নেই।'
+  const myHist = state.numberHistory.filter((x) => String(x.uid) === String(ctx.from.id)).slice(0, 10);
+  if (!myHist.length) {
+    return sendCleanBoard(ctx, '🟡 এখনো কোনো নম্বর হিস্ট্রি নেই।');
+  }
+  const lines = myHist.map(
+    (h, idx) => `${idx + 1}. *${h.service}* | \`${h.phone}\` (Range: \`${h.range || 'auto'}\`)`
   );
+  await sendCleanBoard(ctx, `🟡 *Number History (সর্বশেষ ১০টি):*\n\n${lines.join('\n')}`);
 });
 
 bot.hears('🩷 SUPPORT', async (ctx) => {
@@ -1195,6 +1128,17 @@ bot.on('text', async (ctx) => {
   await registerUser(uid);
   const txt = ctx.message.text.trim();
 
+  // User submitted a Range after clicking "🔢 Set Range"
+  if (state.waitingRangeFrom.has(uid)) {
+    const service = state.waitingRangeFrom.get(uid);
+    state.waitingRangeFrom.delete(uid);
+    const cleanRange = txt.replace(/[^\dA-Za-z_-]/g, '');
+    if (!cleanRange) {
+      return rawSendMessage(ctx.chat.id, '⚠️ সঠিক Range লিখুন।');
+    }
+    return assignAndShowNumber(ctx, service, cleanRange, false);
+  }
+
   if (ADMIN_IDS.includes(uid) && state.adminWizard.has(uid)) {
     const mode = state.adminWizard.get(uid);
     state.adminWizard.delete(uid);
@@ -1257,10 +1201,11 @@ if (SELF_URL) {
 
 (async () => {
   if (FIREBASE_DB_URL) {
-    const [u, b, st, key, en, jc, mLink, mId, oLink, oId, vUsers] = await Promise.all([
+    const [u, b, st, hist, key, en, jc, mLink, mId, oLink, oId, vUsers] = await Promise.all([
       dbGet('users/list'),
       dbGet('balances'),
       dbGet('stats/otps'),
+      dbGet('history/numbers'),
       dbGet('config/apiKey'),
       dbGet('config/apiUrlEnabled'),
       dbGet('config/joinCheckEnabled'),
@@ -1275,6 +1220,7 @@ if (SELF_URL) {
     if (st && typeof st === 'object') {
       state.otpStats = { total: Number(st.total || 0), byCountry: st.byCountry || st.byRange || {} };
     }
+    if (Array.isArray(hist)) state.numberHistory = hist;
     if (key) state.apiKey = key;
     if (typeof en === 'boolean') state.apiEnabled = en;
     if (typeof jc === 'boolean') state.joinCheckEnabled = jc;
@@ -1285,7 +1231,7 @@ if (SELF_URL) {
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
   }
   await bot.launch();
-  console.log('Bot running with dashed OTP copy buttons and OTP group delivery...');
+  console.log('Bot running with single Set Range button on number card and history logging...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
