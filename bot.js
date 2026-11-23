@@ -29,51 +29,116 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-const COUNTRY_META = [
-  { name: 'Afghanistan', iso: 'AF', dial: '93', flag: '🇦🇫' },
-  { name: 'Albania', iso: 'AL', dial: '355', flag: '🇦🇱' },
-  { name: 'Algeria', iso: 'DZ', dial: '213', flag: '🇩🇿' },
-  { name: 'Argentina', iso: 'AR', dial: '54', flag: '🇦🇷' },
-  { name: 'Armenia', iso: 'AM', dial: '374', flag: '🇦🇲' },
-  { name: 'Bangladesh', iso: 'BD', dial: '880', flag: '🇧🇩' },
-  { name: 'Brazil', iso: 'BR', dial: '55', flag: '🇧🇷' },
-  { name: 'Cambodia', iso: 'KH', dial: '855', flag: '🇰🇭' },
-  { name: 'Canada', iso: 'CA', dial: '1', flag: '🇨🇦' },
-  { name: "Côte d'Ivoire", iso: 'CI', dial: '225', flag: '🇨🇮' },
-  { name: 'Egypt', iso: 'EG', dial: '20', flag: '🇪🇬' },
-  { name: 'France', iso: 'FR', dial: '33', flag: '🇫🇷' },
-  { name: 'Germany', iso: 'DE', dial: '49', flag: '🇩🇪' },
-  { name: 'Guinea', iso: 'GN', dial: '224', flag: '🇬🇳' },
-  { name: 'Guinea-Bissau', iso: 'GW', dial: '245', flag: '🇬🇼' },
-  { name: 'India', iso: 'IN', dial: '91', flag: '🇮🇳' },
-  { name: 'Indonesia', iso: 'ID', dial: '62', flag: '🇮🇩' },
-  { name: 'Kenya', iso: 'KE', dial: '254', flag: '🇰🇪' },
-  { name: 'Madagascar', iso: 'MG', dial: '261', flag: '🇲🇬' },
-  { name: 'Malaysia', iso: 'MY', dial: '60', flag: '🇲🇾' },
-  { name: 'Mali', iso: 'ML', dial: '223', flag: '🇲🇱' },
-  { name: 'Mexico', iso: 'MX', dial: '52', flag: '🇲🇽' },
-  { name: 'Montenegro', iso: 'ME', dial: '382', flag: '🇲🇪' },
-  { name: 'Morocco', iso: 'MA', dial: '212', flag: '🇲🇦' },
-  { name: 'Nepal', iso: 'NP', dial: '977', flag: '🇳🇵' },
-  { name: 'Nigeria', iso: 'NG', dial: '234', flag: '🇳🇬' },
-  { name: 'Pakistan', iso: 'PK', dial: '92', flag: '🇵🇰' },
-  { name: 'Philippines', iso: 'PH', dial: '63', flag: '🇵🇭' },
-  { name: 'Poland', iso: 'PL', dial: '48', flag: '🇵🇱' },
-  { name: 'Russia', iso: 'RU', dial: '7', flag: '🇷🇺' },
-  { name: 'Saint Pierre & Miquelon', iso: 'PM', dial: '508', flag: '🇵🇲' },
-  { name: 'Saudi Arabia', iso: 'SA', dial: '966', flag: '🇸🇦' },
-  { name: 'South Africa', iso: 'ZA', dial: '27', flag: '🇿🇦' },
-  { name: 'Spain', iso: 'ES', dial: '34', flag: '🇪🇸' },
-  { name: 'Sudan', iso: 'SD', dial: '249', flag: '🇸🇩' },
-  { name: 'Thailand', iso: 'TH', dial: '66', flag: '🇹🇭' },
-  { name: 'Togo', iso: 'TG', dial: '228', flag: '🇹🇬' },
-  { name: 'Turkey', iso: 'TR', dial: '90', flag: '🇹🇷' },
-  { name: 'Ukraine', iso: 'UA', dial: '380', flag: '🇺🇦' },
-  { name: 'United Arab Emirates', iso: 'AE', dial: '971', flag: '🇦🇪' },
-  { name: 'United Kingdom', iso: 'GB', dial: '44', flag: '🇬🇧' },
-  { name: 'United States', iso: 'US', dial: '1', flag: '🇺🇸' },
-  { name: 'Vietnam', iso: 'VN', dial: '84', flag: '🇻🇳' }
+const regionNamesEn =
+  typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
+    ? new Intl.DisplayNames(['en'], { type: 'region' })
+    : null;
+
+function isoToFlag(iso2) {
+  const code = String(iso2 || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return '🌍';
+  const A = 0x1f1e6;
+  return String.fromCodePoint(A + code.charCodeAt(0) - 65, A + code.charCodeAt(1) - 65);
+}
+
+function isoToCountryName(iso2) {
+  const code = String(iso2 || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return 'Unknown Country';
+  try {
+    return regionNamesEn?.of(code) || code;
+  } catch (_) {
+    return code;
+  }
+}
+
+// বিশ্বের প্রায় সব দেশের ডায়াল কোড -> ISO2 ম্যাপিং (দীর্ঘ কোড আগে রাখা হয়েছে)
+const DIAL_TO_ISO_ENTRIES = [
+  ['1242', 'BS'], ['1246', 'BB'], ['1264', 'AI'], ['1268', 'AG'], ['1284', 'VG'],
+  ['1340', 'VI'], ['1345', 'KY'], ['1441', 'BM'], ['1473', 'GD'], ['1649', 'TC'],
+  ['1664', 'MS'], ['1670', 'MP'], ['1671', 'GU'], ['1684', 'AS'], ['1721', 'SX'],
+  ['1758', 'LC'], ['1767', 'DM'], ['1784', 'VC'], ['1787', 'PR'], ['1809', 'DO'],
+  ['1829', 'DO'], ['1849', 'DO'], ['1868', 'TT'], ['1869', 'KN'], ['1876', 'JM'],
+  ['1939', 'PR'],
+  ['211', 'SS'], ['212', 'MA'], ['213', 'DZ'], ['216', 'TN'], ['218', 'LY'],
+  ['220', 'GM'], ['221', 'SN'], ['222', 'MR'], ['223', 'ML'], ['224', 'GN'],
+  ['225', 'CI'], ['226', 'BF'], ['227', 'NE'], ['228', 'TG'], ['229', 'BJ'],
+  ['230', 'MU'], ['231', 'LR'], ['232', 'SL'], ['233', 'GH'], ['234', 'NG'],
+  ['235', 'TD'], ['236', 'CF'], ['237', 'CM'], ['238', 'CV'], ['239', 'ST'],
+  ['240', 'GQ'], ['241', 'GA'], ['242', 'CG'], ['243', 'CD'], ['244', 'AO'],
+  ['245', 'GW'], ['246', 'IO'], ['247', 'AC'], ['248', 'SC'], ['249', 'SD'],
+  ['250', 'RW'], ['251', 'ET'], ['252', 'SO'], ['253', 'DJ'], ['254', 'KE'],
+  ['255', 'TZ'], ['256', 'UG'], ['257', 'BI'], ['258', 'MZ'], ['260', 'ZM'],
+  ['261', 'MG'], ['262', 'RE'], ['263', 'ZW'], ['264', 'NA'], ['265', 'MW'],
+  ['266', 'LS'], ['267', 'BW'], ['268', 'SZ'], ['269', 'KM'], ['290', 'SH'],
+  ['291', 'ER'], ['297', 'AW'], ['298', 'FO'], ['299', 'GL'],
+  ['350', 'GI'], ['351', 'PT'], ['352', 'LU'], ['353', 'IE'], ['354', 'IS'],
+  ['355', 'AL'], ['356', 'MT'], ['357', 'CY'], ['358', 'FI'], ['359', 'BG'],
+  ['370', 'LT'], ['371', 'LV'], ['372', 'EE'], ['373', 'MD'], ['374', 'AM'],
+  ['375', 'BY'], ['376', 'AD'], ['377', 'MC'], ['378', 'SM'], ['380', 'UA'],
+  ['381', 'RS'], ['382', 'ME'], ['383', 'XK'], ['385', 'HR'], ['386', 'SI'],
+  ['387', 'BA'], ['389', 'MK'],
+  ['420', 'CZ'], ['421', 'SK'], ['423', 'LI'],
+  ['500', 'FK'], ['501', 'BZ'], ['502', 'GT'], ['503', 'SV'], ['504', 'HN'],
+  ['505', 'NI'], ['506', 'CR'], ['507', 'PA'], ['508', 'PM'], ['509', 'HT'],
+  ['590', 'GP'], ['591', 'BO'], ['592', 'GY'], ['593', 'EC'], ['594', 'GF'],
+  ['595', 'PY'], ['596', 'SR'], ['597', 'SR'], ['598', 'UY'], ['599', 'CW'],
+  ['670', 'TL'], ['672', 'NF'], ['673', 'BN'], ['674', 'NR'], ['675', 'PG'],
+  ['676', 'TO'], ['677', 'SB'], ['678', 'VU'], ['679', 'FJ'], ['680', 'PW'],
+  ['681', 'WF'], ['682', 'CK'], ['683', 'NU'], ['685', 'WS'], ['686', 'KI'],
+  ['687', 'NC'], ['688', 'TV'], ['689', 'PF'], ['690', 'TK'], ['691', 'FM'],
+  ['692', 'MH'],
+  ['850', 'KP'], ['852', 'HK'], ['853', 'MO'], ['855', 'KH'], ['856', 'LA'],
+  ['880', 'BD'], ['886', 'TW'],
+  ['960', 'MV'], ['961', 'LB'], ['962', 'JO'], ['963', 'SY'], ['964', 'IQ'],
+  ['965', 'KW'], ['966', 'SA'], ['967', 'YE'], ['968', 'OM'], ['970', 'PS'],
+  ['971', 'AE'], ['972', 'IL'], ['973', 'BH'], ['974', 'QA'], ['975', 'BT'],
+  ['976', 'MN'], ['977', 'NP'], ['992', 'TJ'], ['993', 'TM'], ['994', 'AZ'],
+  ['995', 'GE'], ['996', 'KG'], ['998', 'UZ'],
+  ['20', 'EG'], ['27', 'ZA'], ['30', 'GR'], ['31', 'NL'], ['32', 'BE'],
+  ['33', 'FR'], ['34', 'ES'], ['36', 'HU'], ['39', 'IT'], ['40', 'RO'],
+  ['41', 'CH'], ['43', 'AT'], ['44', 'GB'], ['45', 'DK'], ['46', 'SE'],
+  ['47', 'NO'], ['48', 'PL'], ['49', 'DE'], ['51', 'PE'], ['52', 'MX'],
+  ['53', 'CU'], ['54', 'AR'], ['55', 'BR'], ['56', 'CL'], ['57', 'CO'],
+  ['58', 'VE'], ['60', 'MY'], ['61', 'AU'], ['62', 'ID'], ['63', 'PH'],
+  ['64', 'NZ'], ['65', 'SG'], ['66', 'TH'], ['81', 'JP'], ['82', 'KR'],
+  ['84', 'VN'], ['86', 'CN'], ['90', 'TR'], ['91', 'IN'], ['92', 'PK'],
+  ['93', 'AF'], ['94', 'LK'], ['95', 'MM'], ['98', 'IR'],
+  ['7', 'RU'], ['1', 'US']
 ];
+
+const ALL_ISO_CODES = [
+  'AF','AX','AL','DZ','AS','AD','AO','AI','AQ','AG','AR','AM','AW','AU','AT','AZ',
+  'BS','BH','BD','BB','BY','BE','BZ','BJ','BM','BT','BO','BQ','BA','BW','BV','BR',
+  'IO','BN','BG','BF','BI','CV','KH','CM','CA','KY','CF','TD','CL','CN','CX','CC',
+  'CO','KM','CG','CD','CK','CR','CI','HR','CU','CW','CY','CZ','DK','DJ','DM','DO',
+  'EC','EG','SV','GQ','ER','EE','SZ','ET','FK','FO','FJ','FI','FR','GF','PF','TF',
+  'GA','GM','GE','DE','GH','GI','GR','GL','GD','GP','GU','GT','GG','GN','GW','GY',
+  'HT','HM','VA','HN','HK','HU','IS','IN','ID','IR','IQ','IE','IM','IL','IT','JM',
+  'JP','JE','JO','KZ','KE','KI','KP','KR','KW','KG','LA','LV','LB','LS','LR','LY',
+  'LI','LT','LU','MO','MG','MW','MY','MV','ML','MT','MH','MQ','MR','MU','YT','MX',
+  'FM','MD','MC','MN','ME','MS','MA','MZ','MM','NA','NR','NP','NL','NC','NZ','NI',
+  'NE','NG','NU','NF','MK','MP','NO','OM','PK','PW','PS','PA','PG','PY','PE','PH',
+  'PN','PL','PT','PR','QA','RE','RO','RU','RW','BL','SH','KN','LC','MF','PM','VC',
+  'WS','SM','ST','SA','SN','RS','SC','SL','SG','SX','SK','SI','SB','SO','ZA','GS',
+  'SS','ES','LK','SD','SR','SJ','SE','CH','SY','TW','TJ','TZ','TH','TL','TG','TK',
+  'TO','TT','TN','TR','TM','TC','TV','UG','UA','AE','GB','US','UM','UY','UZ','VU',
+  'VE','VN','VG','VI','WF','EH','YE','ZM','ZW'
+];
+
+const COUNTRY_NAME_TO_ISO = new Map(
+  ALL_ISO_CODES.map((iso) => [isoToCountryName(iso).toLowerCase(), iso])
+);
+COUNTRY_NAME_TO_ISO.set('uk', 'GB');
+COUNTRY_NAME_TO_ISO.set('united kingdom', 'GB');
+COUNTRY_NAME_TO_ISO.set('usa', 'US');
+COUNTRY_NAME_TO_ISO.set('united states', 'US');
+COUNTRY_NAME_TO_ISO.set('uae', 'AE');
+COUNTRY_NAME_TO_ISO.set('ivory coast', 'CI');
+COUNTRY_NAME_TO_ISO.set("cote d'ivoire", 'CI');
+COUNTRY_NAME_TO_ISO.set('russia', 'RU');
+COUNTRY_NAME_TO_ISO.set('vietnam', 'VN');
+COUNTRY_NAME_TO_ISO.set('south korea', 'KR');
+COUNTRY_NAME_TO_ISO.set('north korea', 'KP');
 
 const state = {
   apiEnabled: true,
@@ -167,41 +232,79 @@ function resolveCountryInfo(rawInput) {
   const str = String(rawInput || '').trim();
   const lower = str.toLowerCase();
 
-  const byNameOrIso = COUNTRY_META.find(
-    (c) => lower === c.name.toLowerCase() || lower === c.iso.toLowerCase()
-  );
-  if (byNameOrIso) {
+  // 1) সরাসরি ISO-2 কোড হলে
+  if (/^[a-z]{2}$/i.test(lower)) {
+    const iso = lower.toUpperCase();
+    const name = isoToCountryName(iso);
+    const flag = isoToFlag(iso);
+    const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === iso);
     return {
-      key: byNameOrIso.iso.toLowerCase(),
-      name: byNameOrIso.name,
-      iso: byNameOrIso.iso,
-      label: `${byNameOrIso.flag} ${byNameOrIso.name}`,
-      flag: byNameOrIso.flag,
-      dial: byNameOrIso.dial
+      key: iso.toLowerCase(),
+      name,
+      iso,
+      label: `${flag} ${name}`,
+      flag,
+      dial: dialEntry ? dialEntry[0] : ''
     };
   }
 
+  // 2) পরিচিত দেশের নাম হলে
+  if (COUNTRY_NAME_TO_ISO.has(lower)) {
+    const iso = COUNTRY_NAME_TO_ISO.get(lower);
+    const name = isoToCountryName(iso);
+    const flag = isoToFlag(iso);
+    const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === iso);
+    return {
+      key: iso.toLowerCase(),
+      name,
+      iso,
+      label: `${flag} ${name}`,
+      flag,
+      dial: dialEntry ? dialEntry[0] : ''
+    };
+  }
+
+  // 3) নম্বর বা ডায়াল কোড থেকে দেশ ও পতাকা নির্ণয়
   const digits = str.replace(/[^\d]/g, '');
-  const sorted = [...COUNTRY_META].sort((a, b) => b.dial.length - a.dial.length);
-  for (const c of sorted) {
-    if (digits.startsWith(c.dial)) {
+  if (digits) {
+    for (const [dial, iso] of DIAL_TO_ISO_ENTRIES) {
+      if (digits.startsWith(dial)) {
+        const name = isoToCountryName(iso);
+        const flag = isoToFlag(iso);
+        return {
+          key: iso.toLowerCase(),
+          name,
+          iso,
+          label: `${flag} ${name}`,
+          flag,
+          dial
+        };
+      }
+    }
+  }
+
+  // 4) টেক্সটের ভেতর দেশের নাম থাকলে
+  for (const [cName, iso] of COUNTRY_NAME_TO_ISO.entries()) {
+    if (cName.length >= 4 && lower.includes(cName)) {
+      const name = isoToCountryName(iso);
+      const flag = isoToFlag(iso);
+      const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === iso);
       return {
-        key: c.iso.toLowerCase(),
-        name: c.name,
-        iso: c.iso,
-        label: `${c.flag} ${c.name}`,
-        flag: c.flag,
-        dial: c.dial
+        key: iso.toLowerCase(),
+        name,
+        iso,
+        label: `${flag} ${name}`,
+        flag,
+        dial: dialEntry ? dialEntry[0] : ''
       };
     }
   }
 
-  const fallbackCode = digits.slice(0, 3) || 'N/A';
   return {
-    key: `code_${fallbackCode}`,
-    name: `Country ${fallbackCode}`,
-    iso: 'XX',
-    label: `🌍 Country ${fallbackCode}`,
+    key: 'global',
+    name: 'Global',
+    iso: 'GL',
+    label: '🌍 Global',
     flag: '🌍',
     dial: ''
   };
@@ -624,11 +727,12 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
   const serviceName = item.service || 'WhatsApp';
 
+  // ইউজার বটে শুধু দেশের পতাকা, সার্ভিস, নম্বর ও ওটিপি
   if (sendToUser && uid) {
     const userText =
-      `🟩 *OTP RECEIVED BOARD*\n` +
-      `🟦 *${item.flag} ${serviceName} (${item.countryName}):* \`+${digits}\`\n` +
-      `🟨 *CODE:* \`${formattedOtp}\``;
+      `${item.flag} *${serviceName}*\n` +
+      `📞 \`+${digits}\`\n` +
+      `🔐 \`${formattedOtp}\``;
     const userMarkup = {
       inline_keyboard: [
         [
@@ -645,6 +749,7 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
     await rawSendMessage(uid, userText, userMarkup);
   }
 
+  // OTP গ্রুপে কার্ডের মতো ফরম্যাটে ওটিপি + ওটিপি কপি বাটন
   const otpGroupTarget = String(state.otpGroupId || '').trim() || extractUsernameFromLink(state.otpGroupLink);
   if (!otpGroupTarget) {
     return {
@@ -662,21 +767,34 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
     : `🟩 *LIVE OTP BOARD*\n` +
       `🟦 *${item.flag} ${item.countryName}* 🟢 *${shortTag}*\n` +
       `🟪 \`#${item.countryIso}\` *+${digits}*\n` +
-      `🟨 *Prefix:* \`${prefix}\` | *Range:* \`#${rngCode}\``;
+      `🟨 *Prefix:* \`${prefix}\` | *Range:* \`#${rngCode}\`\n` +
+      `🔐 *OTP:* \`${formattedOtp}\``;
 
-  const grpButtons = [];
+  const grpButtons = [
+    [
+      {
+        text: `📋 ${formattedOtp}`,
+        type: 'copy_text',
+        copy_text: { text: formattedOtp },
+        style: 'success'
+      }
+    ]
+  ];
+
+  const linkRow = [];
   if (state.mainGroupLink && /^https?:\/\//i.test(state.mainGroupLink)) {
-    grpButtons.push({ text: '📢 Channel', url: state.mainGroupLink, style: 'primary' });
+    linkRow.push({ text: '📢 Channel', url: state.mainGroupLink, style: 'primary' });
   }
   if (bot.botInfo?.username) {
-    grpButtons.push({ text: '🤖 Bot Link', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
+    linkRow.push({ text: '🤖 Bot Link', url: `https://t.me/${bot.botInfo.username}`, style: 'success' });
   }
+  if (linkRow.length) grpButtons.push(linkRow);
 
   try {
     await rawSendMessage(
       otpGroupTarget,
       groupText,
-      grpButtons.length ? { inline_keyboard: [grpButtons] } : null
+      { inline_keyboard: grpButtons }
     );
     return { ok: true, target: otpGroupTarget };
   } catch (e) {
@@ -776,7 +894,7 @@ setInterval(async () => {
   }
 }, 10000);
 
-function buildNumberCard(sess, otp = null, statusLine = '') {
+function buildNumberCard(sess, otp = null) {
   const item = sess.item;
   const serviceName = item.service || 'Telegram';
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
@@ -789,9 +907,7 @@ function buildNumberCard(sess, otp = null, statusLine = '') {
     `${item.flag} 🟢 *${serviceName} ${item.countryName}:*\n` +
     `🌍 Country: *${item.countryName}*\n` +
     (item.range && item.range !== 'auto' ? `🔢 Range: \`${item.range}\`\n` : '') +
-    (statusLine ? `🟨 *${statusLine}*\n` : '') +
-    `⏳ *Waiting for OTP....*` +
-    (otp ? `\n✅ *OTP Received:* \`${formatDashedOtp(otp)}\`` : '');
+    (otp ? `✅ *OTP:* \`${formatDashedOtp(otp)}\`` : `⏳ *Waiting for OTP....*`);
 
   const rows = [
     [
@@ -799,13 +915,6 @@ function buildNumberCard(sess, otp = null, statusLine = '') {
         text: `${item.flag} 📋 ${shownPhone}`,
         type: 'copy_text',
         copy_text: { text: shownPhone },
-        style: 'success'
-      }
-    ],
-    [
-      {
-        text: '🔐 Get Code',
-        callback_data: 'manual_get_code',
         style: 'success'
       }
     ],
@@ -849,53 +958,6 @@ function buildNumberCard(sess, otp = null, statusLine = '') {
   }
 
   return { text, reply_markup: { inline_keyboard: rows } };
-}
-
-async function handleGetCodeAction(ctx, preferEdit = true) {
-  const uid = ctx.from.id;
-  const sess = state.userSession.get(uid);
-  if (!sess?.item) {
-    if (ctx.callbackQuery) {
-      await ctx.answerCbQuery('আগে একটি নম্বর নিন।', { show_alert: true });
-    }
-    return openServiceMenu(ctx, preferEdit);
-  }
-
-  try {
-    const otp = await requestOtpFromPanel(sess.item.orderId, sess.item.phone);
-    if (otp) {
-      sess.otpDelivered = true;
-      state.userSession.set(uid, sess);
-      await recordTraffic(sess.item.phone);
-
-      if (state.rewardEnabled && Number(state.otpReward) > 0) {
-        const curBal = Number(state.balances[String(uid)] || 0);
-        const nextBal = Number((curBal + Number(state.otpReward)).toFixed(2));
-        state.balances[String(uid)] = nextBal;
-        await dbPut(`balances/${uid}`, nextBal);
-      }
-
-      if (ctx.callbackQuery) {
-        await ctx.answerCbQuery(`✅ Code: ${formatDashedOtp(otp)}`);
-      }
-      await deliverOtpToUserAndGroup(uid, sess.item, otp, { sendToUser: true });
-      const card = buildNumberCard(sess, otp, 'OTP পাওয়া গেছে!');
-      return sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
-    }
-
-    if (ctx.callbackQuery) {
-      await ctx.answerCbQuery('⏳ এখনো OTP আসেনি, আবার চেষ্টা করুন।');
-    }
-    const card = buildNumberCard(sess, null, 'এখনো OTP আসেনি — আবার Get Code চাপুন।');
-    return sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
-  } catch (err) {
-    console.error('[GET-CODE ERR]:', err.response?.data || err.message);
-    if (ctx.callbackQuery) {
-      await ctx.answerCbQuery('OTP আনতে সমস্যা হয়েছে।');
-    }
-    const card = buildNumberCard(sess, null, 'OTP সার্ভার থেকে কোড আনা যায়নি।');
-    return sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
-  }
 }
 
 async function openServiceMenu(ctx, preferEdit = false) {
@@ -1007,6 +1069,7 @@ setInterval(async () => {
       const otp = await requestOtpFromPanel(sess.item.orderId, sess.item.phone);
       if (otp) {
         sess.otpDelivered = true;
+        sess.otpValue = otp;
         state.userSession.set(uid, sess);
         await recordTraffic(sess.item.phone);
 
@@ -1017,6 +1080,13 @@ setInterval(async () => {
           await dbPut(`balances/${uid}`, nextBal);
         }
 
+        if (sess.chatId && sess.cardMsgId) {
+          const updatedCard = buildNumberCard(sess, otp);
+          try {
+            await rawEditMessageText(sess.chatId, sess.cardMsgId, updatedCard.text, updatedCard.reply_markup);
+          } catch (_) {}
+        }
+
         await deliverOtpToUserAndGroup(uid, sess.item, otp, { sendToUser: true });
       }
     } catch (err) {
@@ -1024,11 +1094,6 @@ setInterval(async () => {
     }
   }
 }, 4000);
-
-bot.command('getcode', async (ctx) => {
-  await registerUser(ctx.from.id);
-  await handleGetCodeAction(ctx, false);
-});
 
 bot.command('getnumber', async (ctx) => {
   await registerUser(ctx.from.id);
@@ -1088,10 +1153,6 @@ bot.hears(/^🟢 GET NUMBER(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await openServiceMenu(ctx, false);
 });
 
-bot.action('manual_get_code', async (ctx) => {
-  await handleGetCodeAction(ctx, true);
-});
-
 bot.action(/^pick_srv_(.+)$/, async (ctx) => {
   const service = decodeURIComponent(ctx.match[1] || 'Telegram');
   await ctx.answerCbQuery();
@@ -1125,7 +1186,7 @@ bot.action('cancel_rng_input', async (ctx) => {
   await ctx.answerCbQuery('বাতিল করা হয়েছে');
   const sess = state.userSession.get(ctx.from.id);
   if (sess?.item) {
-    const card = buildNumberCard(sess, null);
+    const card = buildNumberCard(sess, sess.otpValue || null);
     return sendCleanBoard(ctx, card.text, card.reply_markup, true);
   }
   return openServiceMenu(ctx, true);
@@ -1154,12 +1215,20 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
       item: res,
       stripCC: false,
       autoChecker: true,
-      otpDelivered: false
+      otpDelivered: false,
+      otpValue: null,
+      chatId: ctx.chat?.id,
+      cardMsgId: null
     };
     state.userSession.set(ctx.from.id, sess);
     await saveNumberToHistory(ctx.from.id, res);
     const card = buildNumberCard(sess, null);
-    await sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
+    const sent = await sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
+    if (sent?.message_id) {
+      sess.cardMsgId = sent.message_id;
+      sess.chatId = ctx.chat?.id;
+      state.userSession.set(ctx.from.id, sess);
+    }
   } catch (err) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
@@ -1191,7 +1260,7 @@ bot.action('toggle_auto_chk', async (ctx) => {
   sess.autoChecker = sess.autoChecker === false ? true : false;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.autoChecker ? 'Auto Checker On' : 'Auto Checker Off');
-  const card = buildNumberCard(sess, null);
+  const card = buildNumberCard(sess, sess.otpValue || null);
   try {
     await rawEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, card.text, card.reply_markup);
   } catch (_) {}
@@ -1203,7 +1272,7 @@ bot.action('toggle_cc', async (ctx) => {
   sess.stripCC = !sess.stripCC;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.stripCC ? 'CC Removed' : 'CC Restored');
-  const card = buildNumberCard(sess, null);
+  const card = buildNumberCard(sess, sess.otpValue || null);
   try {
     await rawEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, card.text, card.reply_markup);
   } catch (_) {}
@@ -1445,10 +1514,6 @@ bot.on('text', async (ctx) => {
   await registerUser(uid);
   const txt = ctx.message.text.trim();
 
-  if (/^(?:::)?get\s*code$/i.test(txt)) {
-    return handleGetCodeAction(ctx, false);
-  }
-
   if (state.waitingRangeFrom.has(uid)) {
     const service = state.waitingRangeFrom.get(uid);
     state.waitingRangeFrom.delete(uid);
@@ -1587,13 +1652,12 @@ if (SELF_URL) {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'মূল মেনু চালু করুন' },
-      { command: 'getnumber', description: 'নতুন নম্বর নিন' },
-      { command: 'getcode', description: 'OTP কোড আনুন' }
+      { command: 'getnumber', description: 'নতুন নম্বর নিন' }
     ]);
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with country names, Get Code action & clean boards...');
+  console.log('Bot running with global country & flag mapping, inline OTP delivery & group copy button...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
