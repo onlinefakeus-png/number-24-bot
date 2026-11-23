@@ -43,7 +43,7 @@ function isoToFlag(iso2) {
 
 function isoToCountryName(iso2) {
   const code = String(iso2 || '').trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(code)) return 'Unknown Country';
+  if (!/^[A-Z]{2}$/.test(code)) return 'Global';
   try {
     return regionNamesEn?.of(code) || code;
   } catch (_) {
@@ -51,7 +51,15 @@ function isoToCountryName(iso2) {
   }
 }
 
-// বিশ্বের প্রায় সব দেশের ডায়াল কোড -> ISO2 ম্যাপিং (দীর্ঘ কোড আগে রাখা হয়েছে)
+const CANADA_AREA_CODES = new Set([
+  '204', '226', '236', '249', '250', '263', '289', '306', '343', '354',
+  '365', '367', '368', '403', '416', '418', '428', '431', '437', '438',
+  '450', '468', '474', '506', '514', '519', '548', '579', '581', '587',
+  '604', '613', '639', '647', '672', '683', '705', '709', '742', '753',
+  '778', '780', '782', '807', '819', '825', '867', '873', '902', '905',
+  '942', '947'
+]);
+
 const DIAL_TO_ISO_ENTRIES = [
   ['1242', 'BS'], ['1246', 'BB'], ['1264', 'AI'], ['1268', 'AG'], ['1284', 'VG'],
   ['1340', 'VI'], ['1345', 'KY'], ['1441', 'BM'], ['1473', 'GD'], ['1649', 'TC'],
@@ -130,15 +138,26 @@ const COUNTRY_NAME_TO_ISO = new Map(
 );
 COUNTRY_NAME_TO_ISO.set('uk', 'GB');
 COUNTRY_NAME_TO_ISO.set('united kingdom', 'GB');
+COUNTRY_NAME_TO_ISO.set('great britain', 'GB');
 COUNTRY_NAME_TO_ISO.set('usa', 'US');
 COUNTRY_NAME_TO_ISO.set('united states', 'US');
+COUNTRY_NAME_TO_ISO.set('united states of america', 'US');
 COUNTRY_NAME_TO_ISO.set('uae', 'AE');
 COUNTRY_NAME_TO_ISO.set('ivory coast', 'CI');
 COUNTRY_NAME_TO_ISO.set("cote d'ivoire", 'CI');
+COUNTRY_NAME_TO_ISO.set("côte d'ivoire", 'CI');
 COUNTRY_NAME_TO_ISO.set('russia', 'RU');
+COUNTRY_NAME_TO_ISO.set('russian federation', 'RU');
 COUNTRY_NAME_TO_ISO.set('vietnam', 'VN');
 COUNTRY_NAME_TO_ISO.set('south korea', 'KR');
 COUNTRY_NAME_TO_ISO.set('north korea', 'KP');
+COUNTRY_NAME_TO_ISO.set('laos', 'LA');
+COUNTRY_NAME_TO_ISO.set('moldova', 'MD');
+COUNTRY_NAME_TO_ISO.set('bolivia', 'BO');
+COUNTRY_NAME_TO_ISO.set('venezuela', 'VE');
+COUNTRY_NAME_TO_ISO.set('tanzania', 'TZ');
+COUNTRY_NAME_TO_ISO.set('syria', 'SY');
+COUNTRY_NAME_TO_ISO.set('iran', 'IR');
 
 const state = {
   apiEnabled: true,
@@ -228,75 +247,66 @@ async function callPanel(endpointUrl, extraParams = {}, timeout = 10000) {
   });
 }
 
-function resolveCountryInfo(rawInput) {
-  const str = String(rawInput || '').trim();
-  const lower = str.toLowerCase();
+function buildCountryResultFromIso(iso, fallbackDial = '') {
+  const cleanIso = String(iso || '').toUpperCase();
+  const name = isoToCountryName(cleanIso);
+  const flag = isoToFlag(cleanIso);
+  const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === cleanIso);
+  return {
+    key: cleanIso.toLowerCase(),
+    name,
+    iso: cleanIso,
+    label: `${flag} ${name}`,
+    flag,
+    dial: fallbackDial || (dialEntry ? dialEntry[0] : '')
+  };
+}
 
-  // 1) সরাসরি ISO-2 কোড হলে
-  if (/^[a-z]{2}$/i.test(lower)) {
-    const iso = lower.toUpperCase();
-    const name = isoToCountryName(iso);
-    const flag = isoToFlag(iso);
-    const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === iso);
-    return {
-      key: iso.toLowerCase(),
-      name,
-      iso,
-      label: `${flag} ${name}`,
-      flag,
-      dial: dialEntry ? dialEntry[0] : ''
-    };
-  }
+function resolveCountryInfo(primaryInput, secondaryInput = '') {
+  const candidates = [primaryInput, secondaryInput].filter(
+    (v) => v !== undefined && v !== null && String(v).trim() !== ''
+  );
 
-  // 2) পরিচিত দেশের নাম হলে
-  if (COUNTRY_NAME_TO_ISO.has(lower)) {
-    const iso = COUNTRY_NAME_TO_ISO.get(lower);
-    const name = isoToCountryName(iso);
-    const flag = isoToFlag(iso);
-    const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === iso);
-    return {
-      key: iso.toLowerCase(),
-      name,
-      iso,
-      label: `${flag} ${name}`,
-      flag,
-      dial: dialEntry ? dialEntry[0] : ''
-    };
-  }
+  // ১) আগে স্পষ্ট দেশের নাম বা ISO কোড যাচাই (X/x মাস্কড রেঞ্জ বা কোড এড়িয়ে)
+  for (const raw of candidates) {
+    const str = String(raw).trim();
+    const cleanedText = str.replace(/x+$/i, '').trim();
+    const lower = cleanedText.toLowerCase();
 
-  // 3) নম্বর বা ডায়াল কোড থেকে দেশ ও পতাকা নির্ণয়
-  const digits = str.replace(/[^\d]/g, '');
-  if (digits) {
-    for (const [dial, iso] of DIAL_TO_ISO_ENTRIES) {
-      if (digits.startsWith(dial)) {
-        const name = isoToCountryName(iso);
-        const flag = isoToFlag(iso);
-        return {
-          key: iso.toLowerCase(),
-          name,
-          iso,
-          label: `${flag} ${name}`,
-          flag,
-          dial
-        };
+    if (/^[a-z]{2}$/i.test(lower)) {
+      return buildCountryResultFromIso(lower.toUpperCase());
+    }
+    if (COUNTRY_NAME_TO_ISO.has(lower)) {
+      return buildCountryResultFromIso(COUNTRY_NAME_TO_ISO.get(lower));
+    }
+    for (const [cName, iso] of COUNTRY_NAME_TO_ISO.entries()) {
+      if (cName.length >= 4 && lower.includes(cName)) {
+        return buildCountryResultFromIso(iso);
       }
     }
   }
 
-  // 4) টেক্সটের ভেতর দেশের নাম থাকলে
-  for (const [cName, iso] of COUNTRY_NAME_TO_ISO.entries()) {
-    if (cName.length >= 4 && lower.includes(cName)) {
-      const name = isoToCountryName(iso);
-      const flag = isoToFlag(iso);
-      const dialEntry = DIAL_TO_ISO_ENTRIES.find(([, code]) => code === iso);
-      return {
-        key: iso.toLowerCase(),
-        name,
-        iso,
-        label: `${flag} ${name}`,
-        flag,
-        dial: dialEntry ? dialEntry[0] : ''
-      };
+  // ২) এবার ফোন নম্বর বা ডায়াল কোড থেকে দেশ নির্ণয়
+  for (const raw of candidates) {
+    const str = String(raw).trim();
+    // শুধু নাম বা টেক্সট হলে স্কিপ
+    if (/[a-zA-Z]/.test(str.replace(/x+$/i, ''))) continue;
+
+    const digits = str.replace(/[^\d]/g, '');
+    if (!digits) continue;
+
+    // +1 হলে এরিয়া কোড দিয়ে কানাডা বা যুক্তরাষ্ট্র যাচাই
+    if (digits.startsWith('1') && digits.length >= 4) {
+      const area3 = digits.slice(1, 4);
+      if (CANADA_AREA_CODES.has(area3)) {
+        return buildCountryResultFromIso('CA', `1${area3}`);
+      }
+    }
+
+    for (const [dial, iso] of DIAL_TO_ISO_ENTRIES) {
+      if (digits.startsWith(dial)) {
+        return buildCountryResultFromIso(iso, dial);
+      }
     }
   }
 
@@ -675,8 +685,8 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
     return { error: d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
   }
 
-  const rawCountryHint = d.country || d.countryName || d.data?.country || phone;
-  const countryInfo = resolveCountryInfo(rawCountryHint);
+  const rawCountry = d.country || d.countryName || d.iso || d.data?.country || d.data?.countryName || '';
+  const countryInfo = resolveCountryInfo(phone, rawCountry);
   return {
     service: cleanService,
     range: state.rangeEnabled && range && range !== 'auto' ? range : 'auto',
@@ -727,7 +737,6 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
   const serviceName = item.service || 'WhatsApp';
 
-  // ইউজার বটে শুধু দেশের পতাকা, সার্ভিস, নম্বর ও ওটিপি
   if (sendToUser && uid) {
     const userText =
       `${item.flag} *${serviceName}*\n` +
@@ -749,7 +758,6 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
     await rawSendMessage(uid, userText, userMarkup);
   }
 
-  // OTP গ্রুপে কার্ডের মতো ফরম্যাটে ওটিপি + ওটিপি কপি বাটন
   const otpGroupTarget = String(state.otpGroupId || '').trim() || extractUsernameFromLink(state.otpGroupLink);
   if (!otpGroupTarget) {
     return {
@@ -805,51 +813,62 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
 
 async function extractPanelNewItems() {
   if (!isApiReady()) return [];
-  const entries = [];
-  const seenInBatch = new Set();
+  const grouped = new Map();
+  const seenItemKeys = new Set();
 
   const ranges = await fetchActiveRanges();
   for (const r of ranges) {
     if (!r || typeof r !== 'object') continue;
     const srv = String(r.service || r.app || 'Number').trim() || 'Number';
-    const rng = String(r.range || r.prefix || r.country || '').trim();
+    const rawCountry = String(r.country || r.countryName || r.iso || '').trim();
+    const rng = String(r.range || r.prefix || '').trim();
     const phone = normalizePhone(r.phoneNumber || r.number || r.phone || '');
-    const cInfo = resolveCountryInfo(r.country || r.countryName || phone || rng || '');
+    const cInfo = resolveCountryInfo(phone || rng || rawCountry, rawCountry);
 
     const hasRealNumber = Boolean(phone);
     const hasRealRange = Boolean(rng && !/x{2,}/i.test(rng));
     if (!hasRealNumber && !hasRealRange) continue;
 
-    const key = hasRealNumber
+    const itemKey = hasRealNumber
       ? `num_${srv.toLowerCase()}_${phone}`
       : `rng_${srv.toLowerCase()}_${rng.toLowerCase()}`;
 
-    if (seenInBatch.has(key)) continue;
-    seenInBatch.add(key);
+    if (seenItemKeys.has(itemKey) || state.seenNewItems.has(itemKey)) continue;
+    seenItemKeys.add(itemKey);
 
-    entries.push({
-      key,
-      service: srv,
-      range: rng || 'auto',
-      phone: phone || null,
-      countryLabel: cInfo.label,
-      flag: cInfo.flag
-    });
+    const apiQty = Number(
+      r.count ?? r.available ?? r.stock ?? r.quantity ?? r.numbersCount ?? 1
+    );
+    const qty = Number.isFinite(apiQty) && apiQty > 0 ? apiQty : 1;
+
+    const groupKey = `${srv.toLowerCase()}__${cInfo.key}`;
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, {
+        groupKey,
+        service: srv,
+        countryLabel: cInfo.label,
+        countryName: cInfo.name,
+        flag: cInfo.flag,
+        count: 0,
+        itemKeys: []
+      });
+    }
+    const g = grouped.get(groupKey);
+    g.count += qty;
+    g.itemKeys.push(itemKey);
   }
 
-  return entries;
+  return [...grouped.values()];
 }
 
-async function sendNewNumberNotificationToUsers(entry) {
+async function sendNewNumberNotificationToUsers(summary) {
   if (!state.newNumberNotify || !state.users.length) return;
 
   const text =
-    `🟧 *NEW NUMBER NOTIFICATION*\n` +
-    `🟦 *Service:* *${entry.service}*\n` +
-    `🟩 *Country:* *${entry.countryLabel}*\n` +
-    `🟨 *Range:* \`${entry.range}\`` +
-    (entry.phone ? `\n🟪 *Number:* \`${entry.phone}\`` : '') +
-    `\n🟩 *নতুন নম্বর যুক্ত হয়েছে! এখনই GET NUMBER চাপুন।*`;
+    `🟧 *NEW NUMBER ALERT*\n` +
+    `🟦 *Service:* *${summary.service}*\n` +
+    `🟩 *Country:* *${summary.countryLabel}*\n` +
+    `🟨 *New Numbers:* *${summary.count} টি*`;
 
   for (const uid of state.users) {
     try {
@@ -862,15 +881,20 @@ let isInitialNewNumScan = true;
 setInterval(async () => {
   if (!state.newNumberNotify || !isApiReady()) return;
   try {
-    const items = await extractPanelNewItems();
-    if (!items.length) return;
+    const groups = await extractPanelNewItems();
+    if (!groups.length) {
+      isInitialNewNumScan = false;
+      return;
+    }
 
     if (isInitialNewNumScan) {
       let changed = false;
-      for (const it of items) {
-        if (!state.seenNewItems.has(it.key)) {
-          state.seenNewItems.add(it.key);
-          changed = true;
+      for (const g of groups) {
+        for (const k of g.itemKeys) {
+          if (!state.seenNewItems.has(k)) {
+            state.seenNewItems.add(k);
+            changed = true;
+          }
         }
       }
       if (changed) await persistSeenNewItems();
@@ -879,12 +903,12 @@ setInterval(async () => {
     }
 
     let addedNew = false;
-    for (const it of items) {
-      if (!state.seenNewItems.has(it.key)) {
-        state.seenNewItems.add(it.key);
+    for (const g of groups) {
+      for (const k of g.itemKeys) {
+        state.seenNewItems.add(k);
         addedNew = true;
-        await sendNewNumberNotificationToUsers(it);
       }
+      await sendNewNumberNotificationToUsers(g);
     }
     if (addedNew) {
       await persistSeenNewItems();
@@ -995,10 +1019,11 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
   const seenCountries = new Map();
   for (const r of matched) {
     const rawRange = String(r?.range || r?.country || r?.prefix || '').trim();
-    if (!rawRange) continue;
-    const cInfo = resolveCountryInfo(r?.country || r?.countryName || rawRange);
+    const rawCountry = String(r?.country || r?.countryName || r?.iso || '').trim();
+    if (!rawRange && !rawCountry) continue;
+    const cInfo = resolveCountryInfo(rawRange, rawCountry);
     if (!seenCountries.has(cInfo.key)) {
-      seenCountries.set(cInfo.key, { label: cInfo.label, range: rawRange });
+      seenCountries.set(cInfo.key, { label: cInfo.label, range: rawRange || rawCountry || 'auto' });
     }
   }
 
@@ -1657,7 +1682,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with global country & flag mapping, inline OTP delivery & group copy button...');
+  console.log('Bot running with accurate country/flag detection & service/country number alerts...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
