@@ -232,6 +232,11 @@ async function dbPut(dbPath, data) {
   }
 }
 
+async function persistSeenNewItems() {
+  const arr = [...state.seenNewItems].slice(-500);
+  await dbPut('config/seenNewItems', arr);
+}
+
 async function registerUser(userId) {
   if (!userId) return;
   const idStr = String(userId);
@@ -291,30 +296,6 @@ async function rawDeleteMessage(chatId, messageId) {
   }
 }
 
-async function sendCleanBoard(ctx, text, reply_markup = null, preferEdit = false) {
-  const chatId = ctx.chat?.id;
-  const userId = ctx.from?.id;
-  const activeMsgId = ctx.callbackQuery?.message?.message_id || null;
-
-  const prevMsgId = state.lastBotBoardMsg.get(userId);
-  if (prevMsgId && prevMsgId !== activeMsgId) {
-    await rawDeleteMessage(chatId, prevMsgId);
-    state.lastBotBoardMsg.delete(userId);
-  }
-
-  if (activeMsgId && preferEdit && chatId) {
-    try {
-      const edited = await rawEditMessageText(chatId, activeMsgId, text, reply_markup);
-      if (userId && edited?.message_id) state.lastBotBoardMsg.set(userId, edited.message_id);
-      return edited;
-    } catch (_) {}
-  }
-
-  const sent = await rawSendMessage(chatId, text, reply_markup);
-  if (userId && sent?.message_id) state.lastBotBoardMsg.set(userId, sent.message_id);
-  return sent;
-}
-
 function getMainKeyboard(isAdmin) {
   const rows = [
     [{ text: '🟢 GET NUMBER', style: 'danger' }],
@@ -329,6 +310,32 @@ function getMainKeyboard(isAdmin) {
   ];
   if (isAdmin) rows.push([{ text: '💠 ADMIN PANEL', style: 'primary' }]);
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
+}
+
+async function sendCleanBoard(ctx, text, reply_markup = null, preferEdit = false) {
+  const chatId = ctx.chat?.id;
+  const userId = ctx.from?.id;
+  const activeMsgId = ctx.callbackQuery?.message?.message_id || null;
+  const defaultKb = getMainKeyboard(ADMIN_IDS.includes(Number(userId)));
+  const finalMarkup = reply_markup || (!activeMsgId ? defaultKb : null);
+
+  const prevMsgId = state.lastBotBoardMsg.get(userId);
+  if (prevMsgId && prevMsgId !== activeMsgId) {
+    await rawDeleteMessage(chatId, prevMsgId);
+    state.lastBotBoardMsg.delete(userId);
+  }
+
+  if (activeMsgId && preferEdit && chatId) {
+    try {
+      const edited = await rawEditMessageText(chatId, activeMsgId, text, finalMarkup);
+      if (userId && edited?.message_id) state.lastBotBoardMsg.set(userId, edited.message_id);
+      return edited;
+    } catch (_) {}
+  }
+
+  const sent = await rawSendMessage(chatId, text, finalMarkup);
+  if (userId && sent?.message_id) state.lastBotBoardMsg.set(userId, sent.message_id);
+  return sent;
 }
 
 function hasValidGroupLinks() {
@@ -416,7 +423,6 @@ async function fetchActiveRanges() {
   }
   try {
     const res = await callPanel(PANEL_URLS.activeRange, {}, 8000);
-    console.log('[ACTIVE-RANGE RESP]:', JSON.stringify(res.data));
     const list = Array.isArray(res.data?.data?.active_ranges)
       ? res.data.data.active_ranges
       : Array.isArray(res.data?.active_ranges)
@@ -436,7 +442,6 @@ async function fetchPanelBalanceRaw() {
   if (!isApiReady()) return null;
   try {
     const res = await callPanel(PANEL_URLS.balance, {}, 8000);
-    console.log('[BALANCE RESP]:', JSON.stringify(res.data));
     return res.data || null;
   } catch (err) {
     console.error('[BALANCE ERR]:', err.response?.data || err.message);
@@ -453,8 +458,6 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
   }
 
   const res = await callPanel(PANEL_URLS.getNumber, params, 10000);
-  console.log('[GET-NUMBER RESP]:', JSON.stringify(res.data));
-
   const d = res.data || {};
   if (d.success === false) {
     return { error: d.error || d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
@@ -489,22 +492,10 @@ async function requestOtpFromPanel(orderId, phone) {
   if (phone) params.phoneNumber = phone;
 
   const res = await callPanel(PANEL_URLS.getOtp, params, 10000);
-  console.log('[GET-OTP RESP]:', JSON.stringify(res.data));
-
   const d = res.data || {};
   const inner = d.data && typeof d.data === 'object' ? d.data : {};
 
-  const candidates = [
-    d.otp,
-    d.code,
-    d.sms,
-    d.message,
-    inner.otp,
-    inner.code,
-    inner.sms,
-    inner.message
-  ];
-
+  const candidates = [d.otp, d.code, d.sms, d.message, inner.otp, inner.code, inner.sms, inner.message];
   for (const val of candidates) {
     if (!val) continue;
     const str = String(val).trim();
@@ -512,7 +503,6 @@ async function requestOtpFromPanel(orderId, phone) {
     const match = str.match(/\b\d{4,8}\b/);
     if (match) return match[0];
   }
-
   return null;
 }
 
@@ -578,10 +568,11 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp) {
   }
 }
 
-// Detect newly added numbers/ranges from panel with service & country info
+// Extract only genuinely newly added numbers or ranges from panel
 async function extractPanelNewItems() {
   if (!isApiReady()) return [];
   const entries = [];
+  const seenInBatch = new Set();
 
   const ranges = await fetchActiveRanges();
   for (const r of ranges) {
@@ -590,7 +581,17 @@ async function extractPanelNewItems() {
     const rng = String(r.range || r.prefix || r.country || '').trim();
     const phone = normalizePhone(r.phoneNumber || r.number || r.phone || '');
     const cInfo = resolveCountryInfo(phone || rng || r.country || '');
-    const key = phone ? `num_${srv}_${phone}` : `rng_${srv}_${rng || cInfo.iso}`;
+
+    const hasRealNumber = Boolean(phone);
+    const hasRealRange = Boolean(rng && !/x{2,}/i.test(rng));
+    if (!hasRealNumber && !hasRealRange) continue;
+
+    const key = hasRealNumber
+      ? `num_${srv.toLowerCase()}_${phone}`
+      : `rng_${srv.toLowerCase()}_${rng.toLowerCase()}`;
+
+    if (seenInBatch.has(key)) continue;
+    seenInBatch.add(key);
 
     entries.push({
       key,
@@ -601,30 +602,6 @@ async function extractPanelNewItems() {
       flag: cInfo.flag
     });
   }
-
-  try {
-    const balRes = await callPanel(PANEL_URLS.balance, {}, 8000);
-    const list = Array.isArray(balRes.data?.recentNumbers)
-      ? balRes.data.recentNumbers
-      : Array.isArray(balRes.data?.numbers)
-        ? balRes.data.numbers
-        : [];
-    for (const item of list) {
-      const phone = normalizePhone(item?.phoneNumber || item?.number || item?.phone || '');
-      if (!phone) continue;
-      const srv = String(item?.service || item?.app || 'Number').trim() || 'Number';
-      const rng = String(item?.range || item?.prefix || 'auto').trim();
-      const cInfo = resolveCountryInfo(phone);
-      entries.push({
-        key: `num_${srv}_${phone}`,
-        service: srv,
-        range: rng,
-        phone,
-        countryLabel: cInfo.label,
-        flag: cInfo.flag
-      });
-    }
-  } catch (_) {}
 
   return entries;
 }
@@ -642,7 +619,7 @@ async function sendNewNumberNotificationToUsers(entry) {
 
   for (const uid of state.users) {
     try {
-      await rawSendMessage(uid, text);
+      await rawSendMessage(uid, text, getMainKeyboard(ADMIN_IDS.includes(Number(uid))));
     } catch (_) {}
   }
 }
@@ -655,16 +632,28 @@ setInterval(async () => {
     if (!items.length) return;
 
     if (isInitialNewNumScan) {
-      for (const it of items) state.seenNewItems.add(it.key);
+      let changed = false;
+      for (const it of items) {
+        if (!state.seenNewItems.has(it.key)) {
+          state.seenNewItems.add(it.key);
+          changed = true;
+        }
+      }
+      if (changed) await persistSeenNewItems();
       isInitialNewNumScan = false;
       return;
     }
 
+    let addedNew = false;
     for (const it of items) {
       if (!state.seenNewItems.has(it.key)) {
         state.seenNewItems.add(it.key);
+        addedNew = true;
         await sendNewNumberNotificationToUsers(it);
       }
+    }
+    if (addedNew) {
+      await persistSeenNewItems();
     }
   } catch (err) {
     console.error('[NEW-NUM WATCH ERR]:', err.message);
@@ -739,11 +728,7 @@ function buildNumberCard(sess, otp = null) {
 async function openServiceMenu(ctx, preferEdit = false) {
   const ranges = await fetchActiveRanges();
   const servicesFromApi = [
-    ...new Set(
-      ranges
-        .map((r) => String(r?.service || '').trim())
-        .filter(Boolean)
-    )
+    ...new Set(ranges.map((r) => String(r?.service || '').trim()).filter(Boolean))
   ];
   const serviceList = servicesFromApi.length
     ? servicesFromApi
@@ -776,10 +761,7 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
     if (!rawRange) continue;
     const cInfo = resolveCountryInfo(rawRange);
     if (!seenCountries.has(cInfo.key)) {
-      seenCountries.set(cInfo.key, {
-        label: cInfo.label,
-        range: rawRange
-      });
+      seenCountries.set(cInfo.key, { label: cInfo.label, range: rawRange });
     }
   }
 
@@ -809,6 +791,7 @@ async function openCountryMenu(ctx, service, preferEdit = true) {
   return sendCleanBoard(ctx, `🌍 *${cleanService} — Select Country:*`, { inline_keyboard: rows }, preferEdit);
 }
 
+// Clean & polished Admin Control Panel
 async function renderAdminDashboard(ctx, preferEdit = false) {
   const balData = await fetchPanelBalanceRaw();
   const balAmt = balData?.balance !== undefined ? balData.balance : 0;
@@ -818,56 +801,55 @@ async function renderAdminDashboard(ctx, preferEdit = false) {
   const totalOtps = balData?.totalOtps !== undefined ? balData.totalOtps : state.otpStats.total;
 
   const text =
-    `💠 *NXV SMS — TELEGRAM BOT & API HUB*\n` +
-    `${state.apiEnabled ? '🟢 *API সচল*' : '🔴 *API বন্ধ*'} | ${state.rangeEnabled ? '🔢 *Range ON*' : '🔢 *Range OFF*'} | ${state.newNumberNotify ? '🔔 *Notify ON*' : '🔕 *Notify OFF*'}\n\n` +
-    `🔑 *API Token:* \`${maskApiKey(getApiKey())}\`\n` +
-    `🌐 *Base URL:* \`${PANEL_URLS.base}\`\n` +
-    `👥 *Bot Users:* \`${state.users.length}\` | 📞 *History:* \`${state.numberHistory.length}\`\n\n` +
-    `💰 *Panel Balance:* *৳${balAmt}* (${currency})\n` +
-    `⚡ *Per OTP Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
-    `📞 *Total Numbers:* *${totalNums}* | 📩 *OTPs Received:* *${totalOtps}*\n` +
-    `✉️ *Msg Mode:* *${state.shortMsgMode ? 'Short' : 'Long'}*\n\n` +
-    `📌 *Main Group:* \`${state.mainGroupLink}\` (\`${state.mainGroupId || 'Auto'}\`)\n` +
-    `📌 *OTP Group:* \`${state.otpGroupLink}\` (\`${state.otpGroupId || 'Auto'}\`)\n` +
-    `📌 *Range Group:* \`${state.rangeGroupLink}\` (\`${state.rangeGroupId || 'Auto'}\`)\n` +
-    `👤 *Owner:* \`${state.ownerContact}\``;
+    `⚙️ *ADMIN CONTROL CENTER*\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `• *API:* ${state.apiEnabled ? '🟢 Active' : '🔴 Off'}  |  *Range:* ${state.rangeEnabled ? '🟢 On' : '🔴 Off'}\n` +
+    `• *Reward:* ${state.rewardEnabled ? '🟢 On' : '⚪ Zero'}  |  *Alert:* ${state.newNumberNotify ? '🔔 On' : '🔕 Off'}\n` +
+    `• *OTP Style:* \`${state.shortMsgMode ? 'Short' : 'Long'}\`  |  *Gate:* ${state.joinCheckEnabled ? '🔒 On' : '🔓 Off'}\n\n` +
+    `📊 *OVERVIEW*\n` +
+    `• Users: *${state.users.length}*  |  Numbers: *${totalNums}*  |  OTPs: *${totalOtps}*\n` +
+    `• Balance: *৳${balAmt}* (${currency})  |  Rate: *৳${state.rewardEnabled ? rate : 0}*\n` +
+    `• API Key: \`${maskApiKey(getApiKey())}\`\n\n` +
+    `🔗 *CHANNELS & OWNER*\n` +
+    `• Main: \`${state.mainGroupLink}\`\n` +
+    `• OTP: \`${state.otpGroupLink}\`\n` +
+    `• Range: \`${state.rangeGroupLink}\`\n` +
+    `• Owner: \`${state.ownerContact}\``;
 
   const markup = {
     inline_keyboard: [
       [
-        { text: '🔑 Set API Key', callback_data: 'adm_set_key', style: 'primary' },
-        { text: state.apiEnabled ? '🟢 API ON' : '🔴 API OFF', callback_data: 'adm_tgl_api', style: state.apiEnabled ? 'success' : 'danger' }
+        { text: state.apiEnabled ? '🟢 API: ON' : '🔴 API: OFF', callback_data: 'adm_tgl_api', style: state.apiEnabled ? 'success' : 'danger' },
+        { text: state.rangeEnabled ? '🔢 Range: ON' : '🔢 Range: OFF', callback_data: 'adm_tgl_range', style: state.rangeEnabled ? 'success' : 'danger' }
       ],
       [
-        { text: state.rangeEnabled ? '🔢 Range ON' : '🔢 Range OFF', callback_data: 'adm_tgl_range', style: state.rangeEnabled ? 'success' : 'danger' },
-        { text: state.rewardEnabled ? '💰 Reward ON' : '💰 Zero Balance', callback_data: 'adm_tgl_reward', style: state.rewardEnabled ? 'success' : 'danger' }
+        { text: state.rewardEnabled ? '💰 Reward: ON' : '⚪ Zero Mode', callback_data: 'adm_tgl_reward', style: state.rewardEnabled ? 'success' : 'primary' },
+        { text: state.newNumberNotify ? '🔔 Alert: ON' : '🔕 Alert: OFF', callback_data: 'adm_tgl_notify', style: state.newNumberNotify ? 'success' : 'danger' }
       ],
       [
-        { text: state.newNumberNotify ? '🔔 Notify ON' : '🔕 Notify OFF', callback_data: 'adm_tgl_notify', style: state.newNumberNotify ? 'success' : 'danger' },
-        { text: `✉️ ${state.shortMsgMode ? 'Short Msg' : 'Long Msg'}`, callback_data: 'adm_tgl_msg_mode', style: 'primary' }
+        { text: state.shortMsgMode ? '📝 Mode: Short' : '📄 Mode: Long', callback_data: 'adm_tgl_msg_mode', style: 'primary' },
+        { text: state.joinCheckEnabled ? '🔒 Gate: ON' : '🔓 Gate: OFF', callback_data: 'adm_tgl_join', style: state.joinCheckEnabled ? 'success' : 'danger' }
       ],
       [
-        { text: '📢 Set Main Group', callback_data: 'adm_set_main_grp', style: 'primary' },
-        { text: '📩 Set OTP Group', callback_data: 'adm_set_otp_grp', style: 'primary' }
+        { text: '🔑 API Key', callback_data: 'adm_set_key', style: 'primary' },
+        { text: '👤 Owner', callback_data: 'adm_set_owner', style: 'primary' }
       ],
       [
-        { text: '📡 Set Range Group', callback_data: 'adm_set_rng_grp', style: 'primary' },
-        { text: '👤 Set Owner', callback_data: 'adm_set_owner', style: 'primary' }
+        { text: '📢 Main Group', callback_data: 'adm_set_main_grp', style: 'primary' },
+        { text: '📩 OTP Group', callback_data: 'adm_set_otp_grp', style: 'primary' }
       ],
       [
-        { text: '📣 Broadcast', callback_data: 'adm_bcast', style: 'primary' },
-        { text: state.joinCheckEnabled ? '🔒 Join Gate ON' : '🔓 Join Gate OFF', callback_data: 'adm_tgl_join', style: state.joinCheckEnabled ? 'success' : 'danger' }
+        { text: '📡 Range Group', callback_data: 'adm_set_rng_grp', style: 'primary' },
+        { text: '📣 Broadcast', callback_data: 'adm_bcast', style: 'success' }
       ],
       [
-        { text: '👥 Users & Stats', callback_data: 'adm_users_stats', style: 'primary' },
-        { text: '🧪 Test /balance', callback_data: 'adm_test_bal', style: 'success' }
+        { text: '👥 Stats', callback_data: 'adm_users_stats', style: 'primary' },
+        { text: '🧪 Balance API', callback_data: 'adm_test_bal', style: 'success' },
+        { text: '📡 Range API', callback_data: 'adm_test_rng', style: 'success' }
       ],
       [
-        { text: '📡 Test /active-rangre', callback_data: 'adm_test_rng', style: 'success' },
-        { text: '🔗 API Endpoints', callback_data: 'adm_endpoints' }
-      ],
-      [
-        { text: '🛡️ Community & Support', callback_data: 'adm_community' }
+        { text: '🔗 Endpoints', callback_data: 'adm_endpoints' },
+        { text: '🛡️ Info', callback_data: 'adm_community' }
       ]
     ]
   };
@@ -1331,7 +1313,7 @@ bot.on('text', async (ctx) => {
     state.waitingRangeFrom.delete(uid);
     const cleanRange = txt.replace(/[^\dA-Za-z_-]/g, '');
     if (!cleanRange) {
-      return rawSendMessage(ctx.chat.id, '⚠️ সঠিক Range লিখুন।');
+      return rawSendMessage(ctx.chat.id, '⚠️ সঠিক Range লিখুন।', getMainKeyboard(ADMIN_IDS.includes(uid)));
     }
     return assignAndShowNumber(ctx, service, cleanRange, false);
   }
@@ -1379,7 +1361,7 @@ bot.on('text', async (ctx) => {
       let sent = 0;
       for (const u of state.users) {
         try {
-          await rawSendMessage(u, `📣 *ANNOUNCEMENT*\n\n${txt}`);
+          await rawSendMessage(u, `📣 *ANNOUNCEMENT*\n\n${txt}`, getMainKeyboard(ADMIN_IDS.includes(Number(u))));
           sent++;
         } catch (_) {}
       }
@@ -1411,7 +1393,7 @@ if (SELF_URL) {
 
 (async () => {
   if (FIREBASE_DB_URL) {
-    const [u, b, st, hist, key, en, rngEn, rewEn, notifEn, shMode, jc, mLink, mId, oLink, oId, rLink, rId, own, vUsers] = await Promise.all([
+    const [u, b, st, hist, key, en, rngEn, rewEn, notifEn, shMode, jc, mLink, mId, oLink, oId, rLink, rId, own, vUsers, seenItems] = await Promise.all([
       dbGet('users/list'),
       dbGet('balances'),
       dbGet('stats/otps'),
@@ -1430,7 +1412,8 @@ if (SELF_URL) {
       dbGet('config/rangeGroupLink'),
       dbGet('config/rangeGroupId'),
       dbGet('config/ownerContact'),
-      dbGet('verifiedUsers')
+      dbGet('verifiedUsers'),
+      dbGet('config/seenNewItems')
     ]);
     if (Array.isArray(u)) state.users = u;
     if (b && typeof b === 'object') state.balances = b;
@@ -1453,9 +1436,10 @@ if (SELF_URL) {
     if (rId) state.rangeGroupId = String(rId);
     if (own) state.ownerContact = String(own);
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
+    if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
   await bot.launch();
-  console.log('Bot running with service & country new-number notifications...');
+  console.log('Bot running with deduplicated notifications and polished admin panel...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
