@@ -191,6 +191,8 @@ const state = {
   cachedRanges: null
 };
 
+const lastKnownCounts = new Map();
+
 function getApiKey() {
   return String(state.apiKey || DEFAULT_API_KEY || '').trim();
 }
@@ -237,7 +239,7 @@ function buildPanelUrl(endpointUrl, extraParams = {}) {
   }
 }
 
-async function callPanel(endpointUrl, extraParams = {}, timeout = 10000) {
+async function callPanel(endpointUrl, extraParams = {}, timeout = 20000) {
   const fullUrl = buildPanelUrl(endpointUrl, extraParams);
   return axios.get(fullUrl, {
     timeout,
@@ -267,7 +269,6 @@ function resolveCountryInfo(primaryInput, secondaryInput = '') {
     (v) => v !== undefined && v !== null && String(v).trim() !== ''
   );
 
-  // ১) আগে স্পষ্ট দেশের নাম বা ISO কোড যাচাই (X/x মাস্কড রেঞ্জ বা কোড এড়িয়ে)
   for (const raw of candidates) {
     const str = String(raw).trim();
     const cleanedText = str.replace(/x+$/i, '').trim();
@@ -286,16 +287,13 @@ function resolveCountryInfo(primaryInput, secondaryInput = '') {
     }
   }
 
-  // ২) এবার ফোন নম্বর বা ডায়াল কোড থেকে দেশ নির্ণয়
   for (const raw of candidates) {
     const str = String(raw).trim();
-    // শুধু নাম বা টেক্সট হলে স্কিপ
     if (/[a-zA-Z]/.test(str.replace(/x+$/i, ''))) continue;
 
     const digits = str.replace(/[^\d]/g, '');
     if (!digits) continue;
 
-    // +1 হলে এরিয়া কোড দিয়ে কানাডা বা যুক্তরাষ্ট্র যাচাই
     if (digits.startsWith('1') && digits.length >= 4) {
       const area3 = digits.slice(1, 4);
       if (CANADA_AREA_CODES.has(area3)) {
@@ -633,11 +631,11 @@ async function sendJoinGateBoard(ctx, missingMain = true, missingOtp = true, pre
 
 async function fetchActiveRanges() {
   if (!isApiReady()) return [];
-  if (state.cachedRanges && Date.now() - state.cachedRanges.ts < 15000) {
+  if (state.cachedRanges && Date.now() - state.cachedRanges.ts < 12000) {
     return state.cachedRanges.items;
   }
   try {
-    const res = await callPanel(PANEL_URLS.activeRange, {}, 8000);
+    const res = await callPanel(PANEL_URLS.activeRange, {}, 20000);
     const list = Array.isArray(res.data?.data?.active_ranges)
       ? res.data.data.active_ranges
       : Array.isArray(res.data?.active_ranges)
@@ -649,6 +647,9 @@ async function fetchActiveRanges() {
     return list;
   } catch (err) {
     console.error('[ACTIVE-RANGE ERR]:', err.response?.data || err.message);
+    if (state.cachedRanges?.items?.length) {
+      return state.cachedRanges.items;
+    }
     return [];
   }
 }
@@ -656,7 +657,7 @@ async function fetchActiveRanges() {
 async function fetchPanelBalanceRaw() {
   if (!isApiReady()) return null;
   try {
-    const res = await callPanel(PANEL_URLS.balance, {}, 8000);
+    const res = await callPanel(PANEL_URLS.balance, {}, 15000);
     return res.data || null;
   } catch (err) {
     console.error('[BALANCE ERR]:', err.response?.data || err.message);
@@ -672,7 +673,7 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
     params.range = range;
   }
 
-  const res = await callPanel(PANEL_URLS.getNumber, params, 10000);
+  const res = await callPanel(PANEL_URLS.getNumber, params, 15000);
   const d = res.data || {};
   if (d.success === false) {
     return { error: d.error || d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
@@ -707,7 +708,7 @@ async function requestOtpFromPanel(orderId, phone) {
   if (orderId) params.orderId = orderId;
   if (phone) params.phoneNumber = phone;
 
-  const res = await callPanel(PANEL_URLS.getOtp, params, 10000);
+  const res = await callPanel(PANEL_URLS.getOtp, params, 15000);
   const d = res.data || {};
   const inner = d.data && typeof d.data === 'object' ? d.data : {};
 
@@ -811,10 +812,11 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   }
 }
 
+let isInitialNewNumScan = true;
+
 async function extractPanelNewItems() {
   if (!isApiReady()) return [];
-  const grouped = new Map();
-  const seenItemKeys = new Set();
+  const aggregated = new Map();
 
   const ranges = await fetchActiveRanges();
   for (const r of ranges) {
@@ -829,40 +831,73 @@ async function extractPanelNewItems() {
     const hasRealRange = Boolean(rng && !/x{2,}/i.test(rng));
     if (!hasRealNumber && !hasRealRange) continue;
 
-    const itemKey = hasRealNumber
-      ? `num_${srv.toLowerCase()}_${phone}`
-      : `rng_${srv.toLowerCase()}_${rng.toLowerCase()}`;
-
-    if (seenItemKeys.has(itemKey) || state.seenNewItems.has(itemKey)) continue;
-    seenItemKeys.add(itemKey);
-
+    const bucketKey = `${srv.toLowerCase()}__${cInfo.key}__${(rng || 'auto').toLowerCase()}`;
     const apiQty = Number(
-      r.count ?? r.available ?? r.stock ?? r.quantity ?? r.numbersCount ?? 1
+      r.count ?? r.available ?? r.stock ?? r.quantity ?? r.numbersCount ?? (hasRealNumber ? 1 : 0)
     );
     const qty = Number.isFinite(apiQty) && apiQty > 0 ? apiQty : 1;
 
-    const groupKey = `${srv.toLowerCase()}__${cInfo.key}`;
-    if (!grouped.has(groupKey)) {
-      grouped.set(groupKey, {
-        groupKey,
+    if (!aggregated.has(bucketKey)) {
+      aggregated.set(bucketKey, {
+        bucketKey,
         service: srv,
         countryLabel: cInfo.label,
         countryName: cInfo.name,
         flag: cInfo.flag,
-        count: 0,
-        itemKeys: []
+        totalNow: 0,
+        phones: []
       });
     }
-    const g = grouped.get(groupKey);
-    g.count += qty;
-    g.itemKeys.push(itemKey);
+    const entry = aggregated.get(bucketKey);
+    entry.totalNow += qty;
+    if (phone && !entry.phones.includes(phone)) {
+      entry.phones.push(phone);
+    }
   }
 
-  return [...grouped.values()];
+  const groupedAlerts = new Map();
+
+  for (const [bucketKey, entry] of aggregated.entries()) {
+    const prevCount = lastKnownCounts.get(bucketKey) ?? 0;
+
+    if (isInitialNewNumScan) {
+      lastKnownCounts.set(bucketKey, entry.totalNow);
+      entry.phones.forEach((p) => state.seenNewItems.add(`num_${bucketKey}_${p}`));
+      continue;
+    }
+
+    const unseenPhones = entry.phones.filter((p) => !state.seenNewItems.has(`num_${bucketKey}_${p}`));
+    let addedQty = 0;
+
+    if (entry.phones.length > 0) {
+      addedQty = unseenPhones.length;
+    } else if (entry.totalNow > prevCount) {
+      addedQty = entry.totalNow - prevCount;
+    }
+
+    lastKnownCounts.set(bucketKey, entry.totalNow);
+    unseenPhones.forEach((p) => state.seenNewItems.add(`num_${bucketKey}_${p}`));
+
+    if (addedQty > 0) {
+      const summaryKey = `${entry.service.toLowerCase()}__${entry.countryLabel}`;
+      if (!groupedAlerts.has(summaryKey)) {
+        groupedAlerts.set(summaryKey, {
+          service: entry.service,
+          countryLabel: entry.countryLabel,
+          countryName: entry.countryName,
+          flag: entry.flag,
+          count: 0
+        });
+      }
+      groupedAlerts.get(summaryKey).count += addedQty;
+    }
+  }
+
+  return [...groupedAlerts.values()];
 }
 
 async function sendNewNumberNotificationToUsers(summary) {
-  if (!state.newNumberNotify || !state.users.length) return;
+  if (!state.newNumberNotify || !Array.isArray(state.users) || !state.users.length) return;
 
   const text =
     `🟧 *NEW NUMBER ALERT*\n` +
@@ -870,49 +905,31 @@ async function sendNewNumberNotificationToUsers(summary) {
     `🟩 *Country:* *${summary.countryLabel}*\n` +
     `🟨 *New Numbers:* *${summary.count} টি*`;
 
-  for (const uid of state.users) {
+  const uniqueUsers = [...new Set(state.users.map((id) => String(id).trim()).filter(Boolean))];
+  for (const uid of uniqueUsers) {
     try {
       await rawSendMessage(uid, text, getMainKeyboard(ADMIN_IDS.includes(Number(uid))));
-    } catch (_) {}
+    } catch (e) {
+      console.error(`[NOTIFY ERR ${uid}]:`, e.message);
+    }
   }
 }
 
-let isInitialNewNumScan = true;
 setInterval(async () => {
   if (!state.newNumberNotify || !isApiReady()) return;
   try {
-    const groups = await extractPanelNewItems();
-    if (!groups.length) {
-      isInitialNewNumScan = false;
-      return;
-    }
-
+    const newItems = await extractPanelNewItems();
     if (isInitialNewNumScan) {
-      let changed = false;
-      for (const g of groups) {
-        for (const k of g.itemKeys) {
-          if (!state.seenNewItems.has(k)) {
-            state.seenNewItems.add(k);
-            changed = true;
-          }
-        }
-      }
-      if (changed) await persistSeenNewItems();
       isInitialNewNumScan = false;
+      await persistSeenNewItems();
       return;
     }
+    if (!newItems.length) return;
 
-    let addedNew = false;
-    for (const g of groups) {
-      for (const k of g.itemKeys) {
-        state.seenNewItems.add(k);
-        addedNew = true;
-      }
-      await sendNewNumberNotificationToUsers(g);
+    for (const item of newItems) {
+      await sendNewNumberNotificationToUsers(item);
     }
-    if (addedNew) {
-      await persistSeenNewItems();
-    }
+    await persistSeenNewItems();
   } catch (err) {
     console.error('[NEW-NUM WATCH ERR]:', err.message);
   }
@@ -1682,7 +1699,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with accurate country/flag detection & service/country number alerts...');
+  console.log('Bot running with fixed syntax, country/flag detection, and deduplicated new-number alerts...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
