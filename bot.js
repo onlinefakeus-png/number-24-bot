@@ -18,7 +18,7 @@ const IMS_DEFAULT_TOKEN = String(process.env.IMS_API_TOKEN || '').trim();
 
 const TWENTY_MIN_MS = 20 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
-const OTP_POLL_MS = 6500;
+const OTP_POLL_MS = 6000;
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
@@ -258,7 +258,7 @@ function buildImsUrl(endpointUrl, extraParams = {}) {
 
 async function paceImsRateLimit() {
   const now = Date.now();
-  const waitMs = Math.max(0, 1100 - (now - lastImsCallTs));
+  const waitMs = Math.max(0, 1000 - (now - lastImsCallTs));
   if (waitMs > 0) {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
@@ -355,6 +355,7 @@ function normalizePhone(raw) {
   return digits.length >= 7 && digits.length <= 15 ? `+${digits}` : null;
 }
 
+// যেভাবেই ফাইল বা নম্বর দেওয়া হোক না কেন, সঠিক ফোন নম্বর বের করবে
 function parseNumbersFromInput(rawText) {
   const text = String(rawText || '');
   const phones = [];
@@ -366,28 +367,60 @@ function parseNumbersFromInput(rawText) {
     if (/^range\b/i.test(line) && /\bnumber\b/i.test(line)) continue;
 
     const tokens = line.split(/[\t,|;]+|\s{2,}|\s+/);
-    let candidatePhone = null;
+    let picked = null;
 
     for (const tok of tokens) {
       const cleanTok = tok.trim();
       if (!cleanTok) continue;
-      if (/[.$@/A-Za-z_-]/.test(cleanTok)) continue;
+      // কারেন্সি, প্ল্যান/রেশিও (যেমন $0.012, 7/1), ইমেইল বা ডটযুক্ত সংখ্যা বাদ
+      if (/[$@/A-Za-z_.]/.test(cleanTok)) continue;
 
-      if (/^\d{8,15}$/.test(cleanTok)) {
-        const normalized = normalizePhone(cleanTok);
+      const digitsOnly = cleanTok.replace(/[^\d]/g, '');
+      // ফোন নম্বর সাধারণত ৮ থেকে ১৫ ডিজিটের হয়
+      if (/^\d{8,15}$/.test(digitsOnly)) {
+        const normalized = normalizePhone(digitsOnly);
         if (normalized) {
-          candidatePhone = normalized;
+          picked = normalized;
           break;
         }
       }
     }
 
-    if (candidatePhone && !phones.includes(candidatePhone)) {
-      phones.push(candidatePhone);
+    if (!picked) {
+      const fallbackMatches = line.match(/\+?\d[\d\s\-()]{7,18}\d/g) || [];
+      for (const m of fallbackMatches) {
+        const d = m.replace(/[^\d]/g, '');
+        if (/^\d{8,15}$/.test(d)) {
+          const normalized = normalizePhone(d);
+          if (normalized) {
+            picked = normalized;
+            break;
+          }
+        }
+      }
+    }
+
+    if (picked && !phones.includes(picked)) {
+      phones.push(picked);
     }
   }
 
   return phones;
+}
+
+function applyCountryDialIfMissing(rawPhone, countryInput = '') {
+  let digits = String(rawPhone || '').replace(/[^\d]/g, '');
+  if (digits.startsWith('00') && digits.length > 8) {
+    digits = digits.slice(2);
+  }
+  if (!digits) return null;
+
+  const cInfo = resolveCountryInfo(countryInput || digits, digits);
+  if (countryInput && cInfo.dial && !digits.startsWith(cInfo.dial)) {
+    digits = `${cInfo.dial}${digits}`;
+  }
+
+  return digits.length >= 7 && digits.length <= 15 ? `+${digits}` : null;
 }
 
 function maskPhoneForPublicChannel(rawPhone) {
@@ -420,7 +453,9 @@ function extractOtpCodeFromText(textBody) {
   const raw = String(textBody || '').trim();
   if (!raw) return null;
 
-  const labeledMatch = raw.match(/(?:code|otp|pin|verification|verify|telegram|whatsapp)[^\d]{0,12}(\d{4,8})\b/i);
+  const labeledMatch = raw.match(
+    /(?:code|otp|pin|verification|verify|telegram|whatsapp|facebook|instagram)[^\d]{0,14}(\d{4,8})\b/i
+  );
   if (labeledMatch) return labeledMatch[1];
 
   const dashedMatch = raw.match(/\b(\d{2,4})[-–](\d{2,4})\b/);
@@ -776,38 +811,16 @@ async function fetchActiveRanges() {
   }
 }
 
-async function fetchImsNumbersList() {
-  if (!isImsReady()) return [];
-  if (state.cachedNumbers && Date.now() - state.cachedNumbers.ts < 15000) {
-    return state.cachedNumbers.items;
-  }
-  const ep = getImsEndpoints();
-  try {
-    const res = await callImsPanel(ep.numbers, {}, 20000);
-    const list = normalizeActiveRangeList(res.data);
-    state.cachedNumbers = { items: list, ts: Date.now() };
-    return list;
-  } catch (err) {
-    console.error('[IMS NUMBERS ERR]:', err.response?.data || err.message);
-    return state.cachedNumbers?.items || [];
-  }
-}
-
 async function fetchPanelBalanceRaw() {
   if (!isImsReady()) return null;
   const ep = getImsEndpoints();
   try {
-    const [rangesRes, numbersRes] = await Promise.all([
-      callImsPanel(ep.ranges, {}, 15000).catch(() => ({ data: [] })),
-      callImsPanel(ep.numbers, {}, 15000).catch(() => ({ data: [] }))
-    ]);
-    const rangesCount = normalizeActiveRangeList(rangesRes.data).length;
-    const numbersCount = normalizeActiveRangeList(numbersRes.data).length;
+    const res = await callImsPanel(ep.ranges, {}, 15000);
+    const rangesCount = normalizeActiveRangeList(res.data).length;
     return {
-      api: 'IMS REST v1',
+      api: 'IMS REST v1 (OTP Mode)',
       status: 'connected',
-      rangesCount,
-      numbersCount
+      rangesCount
     };
   } catch (err) {
     console.error('[IMS STATUS ERR]:', err.response?.data || err.message);
@@ -815,102 +828,15 @@ async function fetchPanelBalanceRaw() {
   }
 }
 
-function getAlreadyUsedPhoneDigitsSet() {
-  const usedDigits = new Set();
-
-  for (const h of state.numberHistory || []) {
-    const d = String(h?.phone || '').replace(/[^\d]/g, '');
-    if (d) usedDigits.add(d);
-  }
-
-  for (const c of state.customNumbers || []) {
-    if (c?.used && c?.phone) {
-      const d = String(c.phone).replace(/[^\d]/g, '');
-      if (d) usedDigits.add(d);
-    }
-  }
-
-  for (const [, sess] of state.userSession.entries()) {
-    if (sess?.item?.phone) {
-      const d = String(sess.item.phone).replace(/[^\d]/g, '');
-      if (d) usedDigits.add(d);
-    }
-  }
-
-  return usedDigits;
-}
-
 async function getPanelAndPoolNumberUsageStats() {
   const customList = Array.isArray(state.customNumbers) ? state.customNumbers : [];
   const customUsed = customList.filter((x) => Boolean(x?.used)).length;
   const customUnused = customList.filter((x) => !x?.used).length;
 
-  const usedPhoneSet = getAlreadyUsedPhoneDigitsSet();
-
-  let imsTotal = 0;
-  let imsUsed = 0;
-  let imsUnused = 0;
-  let imsError = '';
-
-  if (!isImsReady()) {
-    imsError = 'IMS API সেট বা চালু নেই';
-  } else {
-    try {
-      const ep = getImsEndpoints();
-      const [numRes, msgRes] = await Promise.all([
-        callImsPanel(ep.numbers, {}, 20000),
-        callImsPanel(ep.messages, { records: 100 }, 20000).catch(() => ({ data: [] }))
-      ]);
-
-      const rawNums = normalizeActiveRangeList(numRes.data);
-      const rawMsgs = Array.isArray(msgRes.data?.data)
-        ? msgRes.data.data
-        : Array.isArray(msgRes.data?.messages)
-        ? msgRes.data.messages
-        : Array.isArray(msgRes.data)
-        ? msgRes.data
-        : [];
-
-      const msgPhoneDigits = new Set();
-      for (const m of rawMsgs) {
-        const d = String(m?.number || m?.to || m?.destination || m?.phone || '').replace(/[^\d]/g, '');
-        if (d) msgPhoneDigits.add(d);
-      }
-
-      const uniquePanelPhones = new Set();
-      for (const row of rawNums) {
-        const p = normalizePhone(
-          row?.number || row?.phone || row?.phoneNumber || row?.msisdn || row?.did || ''
-        );
-        const digits = p ? p.replace(/[^\d]/g, '') : String(row?.id || '').trim();
-        if (!digits || uniquePanelPhones.has(digits)) continue;
-        uniquePanelPhones.add(digits);
-        imsTotal += 1;
-
-        const isRowUsed =
-          Boolean(row?.used) ||
-          Boolean(row?.assigned) ||
-          String(row?.status || '').toLowerCase() === 'used' ||
-          usedPhoneSet.has(digits) ||
-          [...msgPhoneDigits].some((md) => md.endsWith(digits) || digits.endsWith(md));
-
-        if (isRowUsed) imsUsed += 1;
-        else imsUnused += 1;
-      }
-    } catch (err) {
-      console.error('[NUM STATUS ERR]:', err.response?.data || err.message);
-      imsError = 'প্যানেল নম্বর স্ট্যাটাস আনতে সমস্যা হয়েছে';
-    }
-  }
-
   return {
     customTotal: customList.length,
     customUsed,
-    customUnused,
-    imsTotal,
-    imsUsed,
-    imsUnused,
-    imsError
+    customUnused
   };
 }
 
@@ -943,60 +869,6 @@ function pickCustomNumberFromPool(service = 'Telegram', range = '', countryHint 
   return chosen;
 }
 
-async function pickImsNumberFromApi(service = 'Telegram', range = '', countryHint = '') {
-  if (!isImsReady()) return null;
-  const nums = await fetchImsNumbersList();
-  const cleanRangeDigits = String(range || '').replace(/[^\d]/g, '');
-  const cleanCountry = String(countryHint || '').trim().toLowerCase();
-  const usedDigits = getAlreadyUsedPhoneDigitsSet();
-
-  for (const row of nums) {
-    const isRowAlreadyUsed =
-      Boolean(row?.used) ||
-      Boolean(row?.assigned) ||
-      String(row?.status || '').toLowerCase() === 'used';
-    if (isRowAlreadyUsed) continue;
-
-    const phone = normalizePhone(
-      row?.number || row?.phone || row?.phoneNumber || row?.msisdn || row?.did || ''
-    );
-    if (!phone) continue;
-
-    const digits = phone.replace(/[^\d]/g, '');
-    if (usedDigits.has(digits)) continue;
-
-    const cInfo = resolveCountryInfo(phone, row?.country || row?.country_name || cleanCountry);
-
-    if (cleanCountry && cleanCountry !== 'auto') {
-      if (cInfo.name.toLowerCase() !== cleanCountry && cInfo.key !== cleanCountry) {
-        continue;
-      }
-    }
-
-    if (cleanRangeDigits && range !== 'auto') {
-      const rowRange = String(row?.range || row?.prefix || '').replace(/[^\d]/g, '');
-      if (!digits.startsWith(cleanRangeDigits) && rowRange !== cleanRangeDigits) {
-        continue;
-      }
-    }
-
-    return {
-      service: String(service || row?.service || 'Telegram').trim() || 'Telegram',
-      range: cleanRangeDigits || (range && range !== 'auto' ? range : 'auto'),
-      phone,
-      orderId: row?.id || `IMS-${digits}`,
-      countryKey: cInfo.key,
-      countryName: cInfo.name,
-      countryIso: cInfo.iso,
-      countryLabel: cInfo.label,
-      flag: cInfo.flag,
-      dial: cInfo.dial
-    };
-  }
-
-  return null;
-}
-
 async function requestGetNumberFromIms(service = 'Telegram', range = '') {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const customHit = pickCustomNumberFromPool(cleanService, range);
@@ -1005,7 +877,7 @@ async function requestGetNumberFromIms(service = 'Telegram', range = '') {
     const cInfo = resolveCountryInfo(customHit.phone, customHit.countryName || customHit.range);
     return {
       service: cleanService,
-      range: customHit.range || (range && range !== 'auto' ? range : 'auto'),
+      range: 'auto',
       phone: customHit.phone,
       orderId: customHit.orderId || `CUSTOM-${Date.now()}`,
       countryKey: cInfo.key,
@@ -1016,9 +888,6 @@ async function requestGetNumberFromIms(service = 'Telegram', range = '') {
       dial: cInfo.dial
     };
   }
-
-  const imsHit = await pickImsNumberFromApi(cleanService, state.rangeEnabled ? range : '', '');
-  if (imsHit) return imsHit;
 
   return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
 }
@@ -1034,7 +903,7 @@ async function requestNotificationNumber(service = 'Telegram', range = 'auto', c
     const cInfo = resolveCountryInfo(customHit.phone, customHit.countryName || cleanCountry || customHit.range);
     return {
       service: cleanService,
-      range: customHit.range || (cleanRange !== 'auto' ? cleanRange : 'auto'),
+      range: 'auto',
       phone: customHit.phone,
       orderId: customHit.orderId || `CUSTOM-${Date.now()}`,
       countryKey: cInfo.key,
@@ -1045,9 +914,6 @@ async function requestNotificationNumber(service = 'Telegram', range = 'auto', c
       dial: cInfo.dial
     };
   }
-
-  const imsHit = await pickImsNumberFromApi(cleanService, cleanRange, cleanCountry);
-  if (imsHit) return imsHit;
 
   return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
 }
@@ -1097,10 +963,8 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
   }
 }
 
-async function requestOtpFromIms(_orderId, phone) {
-  if (!isImsReady() || !phone) return null;
+async function fetchImsMessagesRows(cleanDigits) {
   const ep = getImsEndpoints();
-  const cleanDigits = String(phone).replace(/[^\d]/g, '');
   const nowUtc = new Date();
   const dateFrom = new Date(nowUtc.getTime() - 24 * 60 * 60 * 1000)
     .toISOString()
@@ -1111,29 +975,47 @@ async function requestOtpFromIms(_orderId, phone) {
     .replace('T', ' ')
     .slice(0, 19);
 
-  const res = await callImsPanel(
-    ep.messages,
-    {
-      date_from: dateFrom,
-      date_to: dateTo,
-      filter_number: cleanDigits,
-      records: 20
-    },
-    15000
-  );
+  const queries = [
+    { date_from: dateFrom, date_to: dateTo, filter_number: cleanDigits, records: 30 },
+    { filter_number: cleanDigits, records: 30 },
+    { records: 50 }
+  ];
 
-  const raw = res.data;
-  const rows = Array.isArray(raw?.data)
-    ? raw.data
-    : Array.isArray(raw?.messages)
-    ? raw.messages
-    : Array.isArray(raw)
-    ? raw
-    : [];
+  for (const params of queries) {
+    try {
+      const res = await callImsPanel(ep.messages, params, 15000);
+      const raw = res.data;
+      const rows = Array.isArray(raw?.data)
+        ? raw.data
+        : Array.isArray(raw?.messages)
+        ? raw.messages
+        : Array.isArray(raw)
+        ? raw
+        : [];
+      if (rows.length > 0) return rows;
+    } catch (_) {}
+  }
+
+  return [];
+}
+
+async function requestOtpFromIms(_orderId, phone) {
+  if (!isImsReady() || !phone) return null;
+  const cleanDigits = String(phone).replace(/[^\d]/g, '');
+  if (!cleanDigits) return null;
+
+  const rows = await fetchImsMessagesRows(cleanDigits);
 
   for (const row of rows) {
     const rowPhone = String(
-      row?.number || row?.to || row?.destination || row?.phone || row?.did || ''
+      row?.number ||
+        row?.to ||
+        row?.destination ||
+        row?.phone ||
+        row?.phoneNumber ||
+        row?.msisdn ||
+        row?.did ||
+        ''
     ).replace(/[^\d]/g, '');
 
     if (rowPhone && !rowPhone.endsWith(cleanDigits) && !cleanDigits.endsWith(rowPhone)) {
@@ -1250,12 +1132,27 @@ async function sendNewNumberNotificationToUsers(summary) {
     `🟨 *যুক্ত হয়েছে:* *${summary.count} টি নম্বর*`;
 
   const uniqueUsers = [...new Set(state.users.map((id) => String(id).trim()).filter(Boolean))];
+  const blockedOrDeadIds = new Set();
+
   for (const uid of uniqueUsers) {
     try {
       await rawSendMessage(uid, text, getMainKeyboard(ADMIN_IDS.includes(Number(uid))));
     } catch (e) {
-      console.error(`[NOTIFY ERR ${uid}]:`, e.message);
+      const msg = String(e?.message || '');
+      if (
+        e?.response?.error_code === 403 ||
+        /bot was blocked by the user|user is deactivated|chat not found/i.test(msg)
+      ) {
+        blockedOrDeadIds.add(uid);
+      } else {
+        console.error(`[NOTIFY ERR ${uid}]:`, msg);
+      }
     }
+  }
+
+  if (blockedOrDeadIds.size > 0) {
+    state.users = state.users.filter((id) => !blockedOrDeadIds.has(String(id).trim()));
+    await dbPut('users/list', state.users);
   }
 }
 
@@ -1361,9 +1258,7 @@ async function sendTwentyMinNotificationToUsers(item) {
   for (const uid of uniqueUsers) {
     try {
       await rawSendMessage(uid, text, markup);
-    } catch (e) {
-      console.error(`[20M NOTIFY ERR ${uid}]:`, e.message);
-    }
+    } catch (_) {}
   }
 }
 
@@ -1441,7 +1336,7 @@ function buildNumberCard(sess, otp = null) {
     [
       {
         text: '🔄 Change Number',
-        callback_data: `chg_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(item.range || 'auto')}`,
+        callback_data: `chg_num_${encodeURIComponent(serviceName)}__auto`,
         style: 'danger'
       }
     ],
@@ -1603,7 +1498,7 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   const totalOtps = state.otpStats.total;
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
   const apiStatusText = statusData?.status === 'connected'
-    ? `Connected (${statusData.rangesCount} ranges, ${statusData.numbersCount} nos)`
+    ? `Connected (${statusData.rangesCount} ranges)`
     : 'Not Connected / Check URL & Token';
 
   const text =
@@ -1923,7 +1818,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
       ctx,
-      `🟧 *PANEL ERROR BOARD*\n🟦 *IMS প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে*`,
+      `🟧 *PANEL ERROR BOARD*\n🟦 *নম্বর আনতে সমস্যা হয়েছে*`,
       {
         inline_keyboard: [
           [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
@@ -1949,7 +1844,7 @@ bot.action(/^notif_num_(.+)__(.+?)__(.*)$/, async (ctx) => {
 
 bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
   await ctx.answerCbQuery('নম্বর পরিবর্তন হচ্ছে...');
-  await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]), true);
+  await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), 'auto', true);
 });
 
 bot.action('toggle_auto_chk', async (ctx) => {
@@ -2187,7 +2082,7 @@ bot.hears(/^(?:🟢 API: ON|🔴 API: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) =>
   state.cachedRanges = null;
   state.cachedNumbers = null;
   await dbPut('config/apiUrlEnabled', state.apiEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ IMS API চালু হয়েছে।' : '⛔ IMS API বন্ধ হয়েছে।');
+  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ IMS OTP API চালু হয়েছে।' : '⛔ IMS OTP API বন্ধ হয়েছে।');
 });
 
 bot.hears(/^🔢 Range: (?:ON|OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -2290,20 +2185,13 @@ bot.hears(/^📊 Num Status(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const st = await getPanelAndPoolNumberUsageStats();
 
-  const imsSection = st.imsError
-    ? `🟨 *IMS Panel Numbers:* *${st.imsError}*`
-    : `🟦 *IMS Panel Numbers:*\n` +
-      `  • মোট নম্বর: *${st.imsTotal}*\n` +
-      `  • ব্যবহার হয়েছে: *${st.imsUsed}*\n` +
-      `  • ব্যবহার হয়নি: *${st.imsUnused}*`;
-
   const customSection =
-    `🟩 *Custom Pool Numbers:*\n` +
+    `🟩 *Uploaded / Custom Numbers:*\n` +
     `  • মোট নম্বর: *${st.customTotal}*\n` +
     `  • ব্যবহার হয়েছে: *${st.customUsed}*\n` +
     `  • ব্যবহার হয়নি: *${st.customUnused}*`;
 
-  const text = `📊 *NUMBER USAGE STATUS*\n\n${imsSection}\n\n${customSection}`;
+  const text = `📊 *NUMBER USAGE STATUS*\n\n${customSection}`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
@@ -2312,10 +2200,8 @@ bot.hears(/^🔗 Endpoints(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   const ep = getImsEndpoints();
   const text =
     `🔗 *IMS API ENDPOINTS*\n\n` +
-    `• Ranges: ${ep.ranges || 'Not Set'}\n` +
-    `• Numbers: ${ep.numbers || 'Not Set'}\n` +
-    `• CDRs: ${ep.cdrs || 'Not Set'}\n` +
-    `• Messages: ${ep.messages || 'Not Set'}`;
+    `• Messages (OTP): ${ep.messages || 'Not Set'}\n` +
+    `• Ranges: ${ep.ranges || 'Not Set'}`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
@@ -2335,12 +2221,16 @@ async function commitAddedNumbers(ctx, wiz) {
   const phones = Array.isArray(wiz.phones) ? wiz.phones : [];
 
   const addedEntries = [];
-  for (const phone of phones) {
-    const cInfo = resolveCountryInfo(rawCountry || phone, phone);
-    const resolvedRange = phone.replace(/^\+/, '').slice(0, 6);
-    const entry = {
+  for (const rawPhone of phones) {
+    const finalPhone = applyCountryDialIfMissing(rawPhone, rawCountry);
+    if (!finalPhone) continue;
+
+    const cInfo = resolveCountryInfo(rawCountry || finalPhone, finalPhone);
+    const resolvedRange = finalPhone.replace(/^\+/, '').slice(0, 6);
+
+    addedEntries.push({
       service: srv,
-      phone,
+      phone: finalPhone,
       countryKey: cInfo.key,
       countryName: cInfo.name,
       countryLabel: cInfo.label,
@@ -2348,8 +2238,11 @@ async function commitAddedNumbers(ctx, wiz) {
       range: resolvedRange,
       used: false,
       addedAt: new Date().toISOString()
-    };
-    addedEntries.push(entry);
+    });
+  }
+
+  if (!addedEntries.length) {
+    return showAdminBoardInReplyMenu(ctx, '⚠️ কোনো বৈধ নম্বর সেট করা যায়নি।');
   }
 
   state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 300);
@@ -2617,7 +2510,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('IMS REST Bot running with service/country delete, ARF channel masking, clean parsing, and OTP delivery...');
+  console.log('IMS REST Bot running in Custom-Number + IMS-OTP mode...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
