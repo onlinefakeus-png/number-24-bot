@@ -191,6 +191,7 @@ const state = {
   cachedRanges: null
 };
 
+let isInitialNewNumScan = true;
 const lastKnownCounts = new Map();
 
 function getApiKey() {
@@ -812,8 +813,6 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   }
 }
 
-let isInitialNewNumScan = true;
-
 async function extractPanelNewItems() {
   if (!isApiReady()) return [];
   const aggregated = new Map();
@@ -821,19 +820,25 @@ async function extractPanelNewItems() {
   const ranges = await fetchActiveRanges();
   for (const r of ranges) {
     if (!r || typeof r !== 'object') continue;
-    const srv = String(r.service || r.app || 'Number').trim() || 'Number';
-    const rawCountry = String(r.country || r.countryName || r.iso || '').trim();
-    const rng = String(r.range || r.prefix || '').trim();
-    const phone = normalizePhone(r.phoneNumber || r.number || r.phone || '');
+
+    const srv =
+      String(r.service || r.app || r.app_name || r.name || 'Number').trim() || 'Number';
+    const rawCountry = String(
+      r.country || r.countryName || r.country_name || r.iso || ''
+    ).trim();
+    const rng = String(r.range || r.prefix || r.code || '').trim();
+    const phone = normalizePhone(
+      r.phoneNumber || r.number || r.phone || r.mobile || ''
+    );
     const cInfo = resolveCountryInfo(phone || rng || rawCountry, rawCountry);
 
     const hasRealNumber = Boolean(phone);
     const hasRealRange = Boolean(rng && !/x{2,}/i.test(rng));
-    if (!hasRealNumber && !hasRealRange) continue;
+    if (!hasRealNumber && !hasRealRange && !rawCountry) continue;
 
-    const bucketKey = `${srv.toLowerCase()}__${cInfo.key}__${(rng || 'auto').toLowerCase()}`;
+    const bucketKey = `${srv.toLowerCase()}__${cInfo.key}__${(rng || rawCountry || 'auto').toLowerCase()}`;
     const apiQty = Number(
-      r.count ?? r.available ?? r.stock ?? r.quantity ?? r.numbersCount ?? (hasRealNumber ? 1 : 0)
+      r.count ?? r.available ?? r.stock ?? r.quantity ?? r.numbersCount ?? r.total ?? (hasRealNumber ? 1 : 1)
     );
     const qty = Number.isFinite(apiQty) && apiQty > 0 ? apiQty : 1;
 
@@ -848,6 +853,7 @@ async function extractPanelNewItems() {
         phones: []
       });
     }
+
     const entry = aggregated.get(bucketKey);
     entry.totalNow += qty;
     if (phone && !entry.phones.includes(phone)) {
@@ -859,23 +865,31 @@ async function extractPanelNewItems() {
 
   for (const [bucketKey, entry] of aggregated.entries()) {
     const prevCount = lastKnownCounts.get(bucketKey) ?? 0;
+    const seenBucketKey = `bucket_${bucketKey}`;
 
     if (isInitialNewNumScan) {
       lastKnownCounts.set(bucketKey, entry.totalNow);
+      state.seenNewItems.add(seenBucketKey);
       entry.phones.forEach((p) => state.seenNewItems.add(`num_${bucketKey}_${p}`));
       continue;
     }
 
-    const unseenPhones = entry.phones.filter((p) => !state.seenNewItems.has(`num_${bucketKey}_${p}`));
-    let addedQty = 0;
+    const isBrandNewBucket = !state.seenNewItems.has(seenBucketKey);
+    const unseenPhones = entry.phones.filter(
+      (p) => !state.seenNewItems.has(`num_${bucketKey}_${p}`)
+    );
 
+    let addedQty = 0;
     if (entry.phones.length > 0) {
       addedQty = unseenPhones.length;
     } else if (entry.totalNow > prevCount) {
       addedQty = entry.totalNow - prevCount;
+    } else if (isBrandNewBucket && entry.totalNow > 0) {
+      addedQty = entry.totalNow;
     }
 
     lastKnownCounts.set(bucketKey, entry.totalNow);
+    state.seenNewItems.add(seenBucketKey);
     unseenPhones.forEach((p) => state.seenNewItems.add(`num_${bucketKey}_${p}`));
 
     if (addedQty > 0) {
@@ -1699,7 +1713,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with fixed syntax, country/flag detection, and deduplicated new-number alerts...');
+  console.log('Bot running with full features and updated new-number notification watcher...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
