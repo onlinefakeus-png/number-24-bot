@@ -725,15 +725,23 @@ async function fetchPanelBalanceRaw() {
   }
 }
 
-function pickCustomNumberFromPool(service = 'Telegram', range = '') {
+function pickCustomNumberFromPool(service = 'Telegram', range = '', countryHint = '') {
   const cleanService = String(service || 'Telegram').trim().toLowerCase();
   const cleanRange = String(range || '').trim().toLowerCase();
+  const cleanCountry = String(countryHint || '').trim().toLowerCase();
   const pool = Array.isArray(state.customNumbers) ? state.customNumbers : [];
 
   const idx = pool.findIndex((entry) => {
     if (!entry || entry.used) return false;
     const srvMatch = String(entry.service || '').toLowerCase() === cleanService;
     if (!srvMatch) return false;
+
+    if (cleanCountry && cleanCountry !== 'auto') {
+      const cName = String(entry.countryName || '').toLowerCase();
+      const cKey = String(entry.countryKey || '').toLowerCase();
+      if (cName !== cleanCountry && cKey !== cleanCountry) return false;
+    }
+
     if (!cleanRange || cleanRange === 'auto') return true;
     const phoneDigits = String(entry.phone || '').replace(/[^\d]/g, '');
     const rngStr = String(entry.range || '').toLowerCase();
@@ -746,7 +754,10 @@ function pickCustomNumberFromPool(service = 'Telegram', range = '') {
   return chosen;
 }
 
-async function requestNumberFromPanel(service = 'Telegram', range = '') {
+// =========================================================================
+// ১. GET NUMBER ফাংশন (আগের নিয়মে: সার্ভিস -> দেশ -> নম্বর)
+// =========================================================================
+async function requestGetNumberFromPanel(service = 'Telegram', range = '') {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const customHit = pickCustomNumberFromPool(cleanService, range);
   if (customHit) {
@@ -825,6 +836,141 @@ async function requestNumberFromPanel(service = 'Telegram', range = '') {
     flag: countryInfo.flag,
     dial: countryInfo.dial
   };
+}
+
+// =========================================================================
+// ২. NOTIFICATION BUTTON নম্বর নেওয়ার আলাদা ফাংশন
+// =========================================================================
+async function requestNotificationNumber(service = 'Telegram', range = 'auto', country = '') {
+  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
+  const cleanRange = String(range || 'auto').trim() || 'auto';
+  const cleanCountry = String(country || '').trim();
+
+  const customHit = pickCustomNumberFromPool(cleanService, cleanRange, cleanCountry);
+  if (customHit) {
+    await dbPut('customNumbers/list', state.customNumbers);
+    const cInfo = resolveCountryInfo(customHit.phone, customHit.countryName || cleanCountry || customHit.range);
+    return {
+      service: cleanService,
+      range: customHit.range || (cleanRange !== 'auto' ? cleanRange : 'auto'),
+      phone: customHit.phone,
+      orderId: customHit.orderId || `CUSTOM-${Date.now()}`,
+      countryKey: cInfo.key,
+      countryName: cInfo.name,
+      countryIso: cInfo.iso,
+      countryLabel: cInfo.label,
+      flag: cInfo.flag,
+      dial: cInfo.dial
+    };
+  }
+
+  if (!isApiReady()) return { error: 'API বন্ধ বা API Key নেই।' };
+  const urls = getPanelUrls();
+  const params = urls.isStub
+    ? { action: 'getNumber', service: cleanService }
+    : { service: cleanService };
+
+  if (cleanRange && cleanRange !== 'auto') {
+    params.range = cleanRange;
+    params.prefix = cleanRange;
+  }
+  if (cleanCountry) {
+    params.country = cleanCountry;
+  }
+
+  const res = await callPanel(urls.getNumber, params, 15000);
+  const raw = res.data;
+
+  if (typeof raw === 'string' && raw.startsWith('ACCESS_NUMBER:')) {
+    const parts = raw.split(':');
+    const phone = normalizePhone(parts[2] || '');
+    if (!phone) return { error: 'নম্বর ফরম্যাট সঠিক নয়।' };
+    const cInfo = resolveCountryInfo(phone, cleanCountry || cleanRange);
+    return {
+      service: cleanService,
+      range: cleanRange !== 'auto' ? cleanRange : 'auto',
+      phone,
+      orderId: parts[1] || null,
+      countryKey: cInfo.key,
+      countryName: cInfo.name,
+      countryIso: cInfo.iso,
+      countryLabel: cInfo.label,
+      flag: cInfo.flag,
+      dial: cInfo.dial
+    };
+  }
+
+  const d = raw && typeof raw === 'object' ? raw : {};
+  if (d.success === false) {
+    return { error: d.error || d.message || 'এই নোটিফিকেশন রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
+  }
+
+  const phone = normalizePhone(
+    d.phoneNumber || d.number || d.phone || d.mobile || d.data?.phoneNumber || d.data?.number || ''
+  );
+  if (!phone) {
+    return { error: d.message || d.error || 'এই নোটিফিকেশন রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
+  }
+
+  const rawCountry = d.country || d.countryName || d.iso || d.data?.country || cleanCountry || '';
+  const countryInfo = resolveCountryInfo(phone, rawCountry);
+  return {
+    service: cleanService,
+    range: cleanRange !== 'auto' ? cleanRange : 'auto',
+    phone,
+    orderId: d.orderId || d.order_id || d.id || d.data?.orderId || d.data?.order_id || null,
+    countryKey: countryInfo.key,
+    countryName: countryInfo.name,
+    countryIso: countryInfo.iso,
+    countryLabel: countryInfo.label,
+    flag: countryInfo.flag,
+    dial: countryInfo.dial
+  };
+}
+
+async function handleNotificationNumberAction(ctx, service, range, country = '') {
+  await registerUser(ctx.from.id);
+  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
+  const cleanRange = String(range || 'auto').trim() || 'auto';
+
+  try {
+    const res = await requestNotificationNumber(cleanService, cleanRange, country);
+    if (!res || res.error) {
+      return sendCleanBoard(
+        ctx,
+        `🟧 *NOTIFICATION NUMBER*\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর নম্বর পাওয়া যায়নি\n${res?.error ? `🟨 *কারণ:* \`${res.error}\`` : ''}`,
+        null,
+        false
+      );
+    }
+
+    const sess = {
+      item: res,
+      stripCC: false,
+      autoChecker: true,
+      otpDelivered: false,
+      otpValue: null,
+      chatId: ctx.chat?.id,
+      cardMsgId: null
+    };
+    state.userSession.set(ctx.from.id, sess);
+    await saveNumberToHistory(ctx.from.id, res);
+    const card = buildNumberCard(sess, null);
+    const sent = await sendCleanBoard(ctx, card.text, card.reply_markup, false);
+    if (sent?.message_id) {
+      sess.cardMsgId = sent.message_id;
+      sess.chatId = ctx.chat?.id;
+      state.userSession.set(ctx.from.id, sess);
+    }
+  } catch (err) {
+    console.error('[NOTIF-NUMBER ERR]:', err.response?.data || err.message);
+    await sendCleanBoard(
+      ctx,
+      `🟧 *NOTIFICATION NUMBER ERROR*\n🟦 *নোটিফিকেশন নম্বর আনতে সমস্যা হয়েছে*`,
+      null,
+      false
+    );
+  }
 }
 
 async function requestOtpFromPanel(orderId, phone) {
@@ -956,10 +1102,10 @@ async function sendNewNumberNotificationToUsers(summary) {
   if (!state.newNumberNotify || !Array.isArray(state.users) || !state.users.length) return;
 
   const text =
-    `🟧 *NEW NUMBER ALERT*\n` +
-    `🟦 *Service:* *${summary.service}*\n` +
-    `🟩 *Country:* *${summary.countryLabel}*\n` +
-    `🟨 *New Numbers:* *${summary.count} টি*`;
+    `🟧 *নতুন নম্বর যুক্ত হয়েছে*\n` +
+    `🟦 *সার্ভিস:* *${summary.service}*\n` +
+    `🟩 *দেশ:* *${summary.countryLabel}*\n` +
+    `🟨 *যুক্ত হয়েছে:* *${summary.count} টি নম্বর*`;
 
   const uniqueUsers = [...new Set(state.users.map((id) => String(id).trim()).filter(Boolean))];
   for (const uid of uniqueUsers) {
@@ -1062,7 +1208,7 @@ async function sendTwentyMinNotificationToUsers(item) {
       [
         {
           text: `📞 নম্বর নিন (${item.service})`,
-          callback_data: `hit_num_${encodeURIComponent(item.service)}__${encodeURIComponent(item.range || 'auto')}`,
+          callback_data: `notif_num_${encodeURIComponent(item.service)}__${encodeURIComponent(item.range || 'auto')}__${encodeURIComponent(item.countryName || '')}`,
           style: 'success'
         }
       ]
@@ -1345,8 +1491,8 @@ async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
     `🟦 *Base URL:* \`${getBaseUrl()}\`\n` +
     `🟨 *API Key:* \`${maskApiKey(getApiKey())}\`\n` +
     `🟩 *Ready Added Numbers:* *${unusedCustom} টি*\n\n` +
-    `নম্বর অ্যাড করার ফরম্যাট:\n` +
-    `\`Telegram +22879410829 Togo 22879\``;
+    `➕ *Add Number* চাপলে ধাপে ধাপে:\n` +
+    `১) সার্ভিস → ২) দেশ → ৩) নম্বর বা নম্বর ফাইল দিতে পারবেন।`;
 
   const markup = {
     inline_keyboard: [
@@ -1501,7 +1647,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
   const cleanRange = state.rangeEnabled ? String(range || 'auto').trim() || 'auto' : 'auto';
 
   try {
-    const res = await requestNumberFromPanel(cleanService, cleanRange);
+    const res = await requestGetNumberFromPanel(cleanService, cleanRange);
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
@@ -1553,12 +1699,12 @@ bot.action(/^get_num_(.+)__(.+)$/, async (ctx) => {
   await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]), true);
 });
 
-bot.action(/^hit_num_(.+)__(.+)$/, async (ctx) => {
-  await registerUser(ctx.from.id);
+bot.action(/^notif_num_(.+)__(.+?)__(.*)$/, async (ctx) => {
   const service = decodeURIComponent(ctx.match[1] || 'Telegram');
   const range = decodeURIComponent(ctx.match[2] || 'auto');
-  await ctx.answerCbQuery('নম্বর আনা হচ্ছে...');
-  await assignAndShowNumber(ctx, service, range, false);
+  const country = decodeURIComponent(ctx.match[3] || '');
+  await ctx.answerCbQuery('নোটিফিকেশন থেকে নম্বর আনা হচ্ছে...');
+  await handleNotificationNumberAction(ctx, service, range, country);
 });
 
 bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
@@ -1659,11 +1805,11 @@ bot.hears(/^⚙️ Panel & Add Num(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 
 bot.action('adm_set_baseurl', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'baseurl');
+  state.adminWizard.set(ctx.from.id, { step: 'baseurl' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🌐 *SET PANEL BASE URL*\n🟦 *যেকোনো প্যানেলের নতুন Base URL পাঠান (যেমন: \`https://example-panel.com\`)*`,
+    `🌐 *SET PANEL BASE URL*\n🟦 *নতুন Base URL পাঠান (যেমন: \`https://example-panel.com\`)*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
   );
@@ -1671,7 +1817,7 @@ bot.action('adm_set_baseurl', async (ctx) => {
 
 bot.action('adm_set_apikey', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'key');
+  state.adminWizard.set(ctx.from.id, { step: 'key' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
@@ -1681,15 +1827,17 @@ bot.action('adm_set_apikey', async (ctx) => {
   );
 });
 
+// =========================================================================
+// ৩. ধাপে ধাপে ADD NUMBER (সার্ভিস -> দেশ -> নম্বর বা নম্বর ফাইল)
+// =========================================================================
 bot.action('adm_add_number', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'add_num');
+  state.adminWizard.set(ctx.from.id, { step: 'add_num_service' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `➕ *ADD NUMBER TO BOT*\n` +
-      `🟩 *ফরম্যাট:* \`Service PhoneNumber Country Range\`\n` +
-      `🟨 *উদাহরণ:* \`Telegram +22879410829 Togo 22879\``,
+    `➕ *ADD NUMBER — ধাপ ১/৩ (সার্ভিস)*\n` +
+      `🟩 *সার্ভিসের নাম লিখুন (যেমন: \`Telegram\`, \`WhatsApp\`, \`Facebook\`)*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
   );
@@ -1791,19 +1939,19 @@ bot.hears(/^(?:🔒 Gate: ON|🔓 Gate: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) 
 
 bot.hears(/^👤 Owner(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'owner');
+  state.adminWizard.set(ctx.from.id, { step: 'owner' });
   await sendCleanBoard(ctx, '👤 *OWNER BOARD*\n🟦 *নতুন Owner ইউজারনেম পাঠান (@username)*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📢 Main Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'main_grp');
+  state.adminWizard.set(ctx.from.id, { step: 'main_grp' });
   await sendCleanBoard(ctx, '📢 *MAIN GROUP BOARD*\n🟦 *Main Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'otp_grp');
+  state.adminWizard.set(ctx.from.id, { step: 'otp_grp' });
   await sendCleanBoard(
     ctx,
     '📩 *OTP GROUP BOARD*\n🟩 *OTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে Chat ID দিন)*',
@@ -1813,13 +1961,13 @@ bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 
 bot.hears(/^📡 Range Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'rng_grp');
+  state.adminWizard.set(ctx.from.id, { step: 'rng_grp' });
   await sendCleanBoard(ctx, '📡 *RANGE GROUP BOARD*\n🟦 *Range Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📣 Broadcast(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, 'bcast');
+  state.adminWizard.set(ctx.from.id, { step: 'bcast' });
   await sendCleanBoard(ctx, '📣 *BROADCAST BOARD*\n🟨 *সব ইউজারকে পাঠানোর মেসেজ লিখুন*', getAdminPanelAsMainKeyboard());
 });
 
@@ -1873,6 +2021,93 @@ bot.hears(/^🛡️ Info(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
+function parseNumbersFromInput(rawText) {
+  const chunks = String(rawText || '')
+    .split(/[\n,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const phones = [];
+  for (const chunk of chunks) {
+    const p = normalizePhone(chunk);
+    if (p && !phones.includes(p)) {
+      phones.push(p);
+    }
+  }
+  return phones;
+}
+
+async function commitAddedNumbers(ctx, wiz) {
+  const srv = String(wiz.service || 'Telegram').trim() || 'Telegram';
+  const rawCountry = String(wiz.country || '').trim();
+  const phones = Array.isArray(wiz.phones) ? wiz.phones : [];
+
+  const addedEntries = [];
+  for (const phone of phones) {
+    const cInfo = resolveCountryInfo(rawCountry || phone, phone);
+    const resolvedRange = phone.replace(/^\+/, '').slice(0, 6);
+    const entry = {
+      service: srv,
+      phone,
+      countryKey: cInfo.key,
+      countryName: cInfo.name,
+      countryLabel: cInfo.label,
+      flag: cInfo.flag,
+      range: resolvedRange,
+      used: false,
+      addedAt: new Date().toISOString()
+    };
+    addedEntries.push(entry);
+  }
+
+  state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 300);
+  await dbPut('customNumbers/list', state.customNumbers);
+
+  const firstCountry = addedEntries[0]?.countryLabel || resolveCountryInfo(rawCountry).label;
+  await sendNewNumberNotificationToUsers({
+    service: srv,
+    countryLabel: firstCountry,
+    count: addedEntries.length
+  });
+
+  return showAdminBoardInReplyMenu(
+    ctx,
+    `✅ ${addedEntries.length} টি নম্বর যুক্ত হয়েছে (${firstCountry} • ${srv})`
+  );
+}
+
+bot.on('document', async (ctx) => {
+  const uid = ctx.from.id;
+  await registerUser(uid);
+  if (!ADMIN_IDS.includes(uid) || !state.adminWizard.has(uid)) return;
+
+  const wiz = state.adminWizard.get(uid);
+  if (wiz.step !== 'add_num_numbers') return;
+
+  try {
+    const fileId = ctx.message.document.file_id;
+    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const resp = await axios.get(fileLink.href, { responseType: 'text', timeout: 15000 });
+    const phones = parseNumbersFromInput(resp.data || '');
+
+    if (!phones.length) {
+      return sendCleanBoard(
+        ctx,
+        `⚠️ *ফাইলে কোনো সঠিক ফোন নম্বর পাওয়া যায়নি।*\nআবার নম্বর অথবা ফাইল পাঠান।`,
+        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+        false
+      );
+    }
+
+    state.adminWizard.delete(uid);
+    wiz.phones = phones;
+    return commitAddedNumbers(ctx, wiz);
+  } catch (err) {
+    console.error('[DOC ADD NUM ERR]:', err.message);
+    return showAdminBoardInReplyMenu(ctx, '⚠️ নম্বর ফাইল পড়তে সমস্যা হয়েছে।');
+  }
+});
+
 bot.on('text', async (ctx) => {
   const uid = ctx.from.id;
   await registerUser(uid);
@@ -1891,10 +2126,11 @@ bot.on('text', async (ctx) => {
   }
 
   if (ADMIN_IDS.includes(uid) && state.adminWizard.has(uid)) {
-    const mode = state.adminWizard.get(uid);
-    state.adminWizard.delete(uid);
+    const wiz = state.adminWizard.get(uid);
+    const mode = wiz.step;
 
     if (mode === 'baseurl') {
+      state.adminWizard.delete(uid);
       const cleanedUrl = txt.replace(/\/+$/, '');
       if (!/^https?:\/\/.+/i.test(cleanedUrl)) {
         return showAdminBoardInReplyMenu(ctx, '⚠️ সঠিক http/https Base URL দিন।');
@@ -1907,45 +2143,58 @@ bot.on('text', async (ctx) => {
     }
 
     if (mode === 'key') {
+      state.adminWizard.delete(uid);
       state.apiKey = txt;
       state.cachedRanges = null;
       await dbPut('config/apiKey', txt);
       return showAdminBoardInReplyMenu(ctx, '✅ নতুন API Token সেট হয়েছে।');
     }
 
-    if (mode === 'add_num') {
-      const parts = txt.split(/\s+/).filter(Boolean);
-      const srv = parts[0] || 'Telegram';
-      const phone = normalizePhone(parts[1] || '');
-      const extraCountry = parts[2] || '';
-      const extraRange = parts[3] || '';
-
-      if (!phone) {
-        return showAdminBoardInReplyMenu(ctx, '⚠️ সঠিক ফোন নম্বর দিন (যেমন: Telegram +22879410829 Togo 22879)।');
-      }
-
-      const cInfo = resolveCountryInfo(phone, extraCountry || extraRange);
-      const resolvedRange = extraRange || phone.replace(/^\+/, '').slice(0, 6);
-      const entry = {
-        service: srv,
-        phone,
-        countryName: cInfo.name,
-        countryLabel: cInfo.label,
-        flag: cInfo.flag,
-        range: resolvedRange,
-        used: false,
-        addedAt: new Date().toISOString()
-      };
-
-      state.customNumbers = [entry, ...(state.customNumbers || [])].slice(0, 300);
-      await dbPut('customNumbers/list', state.customNumbers);
-      await sendNewNumberNotificationToUsers({
-        service: srv,
-        countryLabel: cInfo.label,
-        count: 1
-      });
-      return showAdminBoardInReplyMenu(ctx, `✅ নম্বর অ্যাড হয়েছে: ${cInfo.label} ${srv} (${phone})`);
+    if (mode === 'add_num_service') {
+      wiz.service = txt;
+      wiz.step = 'add_num_country';
+      state.adminWizard.set(uid, wiz);
+      return sendCleanBoard(
+        ctx,
+        `➕ *ADD NUMBER — ধাপ ২/৩ (দেশ)*\n` +
+          `🟦 *সার্ভিস:* *${txt}*\n` +
+          `🟩 *দেশের নাম বা কোড লিখুন (যেমন: \`Togo\`, \`Bangladesh\`, \`US\`)*`,
+        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+        false
+      );
     }
+
+    if (mode === 'add_num_country') {
+      wiz.country = txt;
+      wiz.step = 'add_num_numbers';
+      state.adminWizard.set(uid, wiz);
+      const cInfo = resolveCountryInfo(txt);
+      return sendCleanBoard(
+        ctx,
+        `➕ *ADD NUMBER — ধাপ ৩/৩ (নম্বর বা নম্বর ফাইল)*\n` +
+          `🟦 *সার্ভিস:* *${wiz.service}* | *দেশ:* *${cInfo.label}*\n` +
+          `🟩 *একটি নম্বর, একাধিক নম্বর (প্রতি লাইনে একটি), অথবা \`.txt\` নম্বর ফাইল পাঠান*`,
+        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+        false
+      );
+    }
+
+    if (mode === 'add_num_numbers') {
+      const phones = parseNumbersFromInput(txt);
+      if (!phones.length) {
+        return sendCleanBoard(
+          ctx,
+          `⚠️ *সঠিক ফোন নম্বর পাওয়া যায়নি।*\nনম্বর অথবা \`.txt\` ফাইল পাঠান।`,
+          { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+          false
+        );
+      }
+      state.adminWizard.delete(uid);
+      wiz.phones = phones;
+      return commitAddedNumbers(ctx, wiz);
+    }
+
+    state.adminWizard.delete(uid);
 
     if (mode === 'main_grp') {
       const parts = txt.split(/\s+/);
@@ -2074,7 +2323,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with 20-min hit notifications, panel & custom number manager, and auto-detecting active services...');
+  console.log('Bot running with separate GET NUMBER flow, notification number handler, and 3-step Add Number wizard...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
