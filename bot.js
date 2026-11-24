@@ -997,7 +997,6 @@ async function pickImsNumberFromApi(service = 'Telegram', range = '', countryHin
   return null;
 }
 
-// ১. GET NUMBER (আগের নিয়মে: সার্ভিস -> দেশ -> নম্বর)
 async function requestGetNumberFromIms(service = 'Telegram', range = '') {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const customHit = pickCustomNumberFromPool(cleanService, range);
@@ -1024,7 +1023,6 @@ async function requestGetNumberFromIms(service = 'Telegram', range = '') {
   return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
 }
 
-// ২. NOTIFICATION BUTTON নম্বর নেওয়ার আলাদা ফাংশন
 async function requestNotificationNumber(service = 'Telegram', range = 'auto', country = '') {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const cleanRange = String(range || 'auto').trim() || 'auto';
@@ -1631,13 +1629,13 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
 
 async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
+  const totalCustom = (state.customNumbers || []).length;
   const text =
     `⚙️ *IMS PANEL & NUMBER MANAGER*\n` +
     `🟦 *IMS Base URL:* \`${getImsBaseUrl() || 'Not Set'}\`\n` +
     `🟨 *IMS API Token:* \`${maskImsToken(getImsApiToken())}\`\n` +
-    `🟩 *Ready Added Numbers:* *${unusedCustom} টি*\n\n` +
-    `➕ *Add Number* চাপলে ধাপে ধাপে:\n` +
-    `১) সার্ভিস → ২) দেশ → ৩) নম্বর বা নম্বর ফাইল দিতে পারবেন।`;
+    `🟩 *Custom Pool:* *${unusedCustom} রেডি / ${totalCustom} মোট*\n\n` +
+    `➕ *Add Number* দিয়ে নম্বর যুক্ত করুন অথবা 🗑️ *Delete Numbers* দিয়ে সার্ভিস ও দেশ অনুযায়ী ডিলিট করুন।`;
 
   const markup = {
     inline_keyboard: [
@@ -1646,7 +1644,8 @@ async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
         { text: '🔑 Set API Token', callback_data: 'adm_set_apikey', style: 'primary' }
       ],
       [
-        { text: '➕ Add Number', callback_data: 'adm_add_number', style: 'success' }
+        { text: '➕ Add Number', callback_data: 'adm_add_number', style: 'success' },
+        { text: '🗑️ Delete Numbers', callback_data: 'adm_del_menu', style: 'danger' }
       ],
       [
         { text: '⬅️ Back to Admin', callback_data: 'adm_back_board', style: 'danger' }
@@ -1655,6 +1654,102 @@ async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
   };
 
   return sendCleanBoard(ctx, text, markup, preferEdit);
+}
+
+function groupCustomNumbersByServiceAndCountry() {
+  const grouped = new Map();
+  for (const item of state.customNumbers || []) {
+    if (!item || !item.phone) continue;
+    const srv = String(item.service || 'Telegram').trim() || 'Telegram';
+    const cInfo = resolveCountryInfo(item.countryName || item.phone, item.phone);
+    const cKey = cInfo.key || 'global';
+
+    if (!grouped.has(srv)) {
+      grouped.set(srv, {
+        service: srv,
+        total: 0,
+        unused: 0,
+        countries: new Map()
+      });
+    }
+
+    const srvObj = grouped.get(srv);
+    srvObj.total += 1;
+    if (!item.used) srvObj.unused += 1;
+
+    if (!srvObj.countries.has(cKey)) {
+      srvObj.countries.set(cKey, {
+        countryKey: cKey,
+        countryLabel: item.countryLabel || cInfo.label,
+        total: 0,
+        unused: 0
+      });
+    }
+
+    const cObj = srvObj.countries.get(cKey);
+    cObj.total += 1;
+    if (!item.used) cObj.unused += 1;
+  }
+  return grouped;
+}
+
+async function openDeleteNumbersMenu(ctx, preferEdit = true) {
+  const grouped = groupCustomNumbersByServiceAndCountry();
+  if (!grouped.size) {
+    return sendCleanBoard(
+      ctx,
+      `🗑️ *DELETE CUSTOM NUMBERS*\n🟩 *ডিলিট করার মতো কোনো অ্যাড করা নম্বর নেই।*`,
+      {
+        inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]]
+      },
+      preferEdit
+    );
+  }
+
+  const summaryLines = [];
+  const rows = [];
+
+  for (const [srv, srvObj] of grouped.entries()) {
+    summaryLines.push(`🟦 *${srv}:* *${srvObj.total} টি* (*${srvObj.unused} রেডি*)`);
+
+    rows.push([
+      {
+        text: `🗑️ All ${srv} (${srvObj.total})`,
+        callback_data: `adm_del_srv_${encodeURIComponent(srv)}`,
+        style: 'danger'
+      }
+    ]);
+
+    const countryArr = [...srvObj.countries.values()];
+    for (let i = 0; i < countryArr.length; i += 2) {
+      const c1 = countryArr[i];
+      const row = [
+        {
+          text: `🗑️ ${srv} • ${c1.countryLabel} (${c1.total})`,
+          callback_data: `adm_del_sc_${encodeURIComponent(srv)}__${encodeURIComponent(c1.countryKey)}`,
+          style: 'primary'
+        }
+      ];
+      if (countryArr[i + 1]) {
+        const c2 = countryArr[i + 1];
+        row.push({
+          text: `🗑️ ${srv} • ${c2.countryLabel} (${c2.total})`,
+          callback_data: `adm_del_sc_${encodeURIComponent(srv)}__${encodeURIComponent(c2.countryKey)}`,
+          style: 'primary'
+        });
+      }
+      rows.push(row);
+    }
+  }
+
+  rows.push([{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]);
+
+  const text =
+    `🗑️ *DELETE CUSTOM NUMBERS*\n` +
+    `🟨 *সার্ভিস অথবা নির্দিষ্ট সার্ভিস ও দেশ বেছে নম্বর ডিলিট করুন:*\n\n` +
+    summaryLines.join('\n');
+
+  return sendCleanBoard(ctx, text, { inline_keyboard: rows }, preferEdit);
 }
 
 setInterval(async () => {
@@ -1982,6 +2077,56 @@ bot.action('adm_add_number', async (ctx) => {
       `🟩 *সার্ভিসের নাম লিখুন (যেমন: \`Telegram\`, \`WhatsApp\`, \`Facebook\`)*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
+  );
+});
+
+bot.action('adm_del_menu', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  await ctx.answerCbQuery();
+  await openDeleteNumbersMenu(ctx, true);
+});
+
+bot.action(/^adm_del_srv_(.+)$/, async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  const rawSrv = decodeURIComponent(ctx.match[1] || '').trim();
+  const targetSrv = rawSrv.toLowerCase();
+  const beforeCount = (state.customNumbers || []).length;
+
+  state.customNumbers = (state.customNumbers || []).filter(
+    (x) => (String(x?.service || 'Telegram').trim() || 'Telegram').toLowerCase() !== targetSrv
+  );
+  const removedCount = beforeCount - state.customNumbers.length;
+  await dbPut('customNumbers/list', state.customNumbers);
+
+  await ctx.answerCbQuery(`${removedCount} টি নম্বর ডিলিট হয়েছে`);
+  await showAdminBoardInReplyMenu(
+    ctx,
+    `🗑️ *${rawSrv}* সার্ভিসের *${removedCount} টি* নম্বর ডিলিট করা হয়েছে।`
+  );
+});
+
+bot.action(/^adm_del_sc_(.+)__(.+)$/, async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  const rawSrv = decodeURIComponent(ctx.match[1] || '').trim();
+  const rawCountryKey = decodeURIComponent(ctx.match[2] || '').trim();
+  const targetSrv = rawSrv.toLowerCase();
+  const targetCountryKey = rawCountryKey.toLowerCase();
+  const beforeCount = (state.customNumbers || []).length;
+
+  state.customNumbers = (state.customNumbers || []).filter((x) => {
+    const itemSrv = (String(x?.service || 'Telegram').trim() || 'Telegram').toLowerCase();
+    const cInfo = resolveCountryInfo(x?.countryName || x?.phone, x?.phone);
+    const itemCountryKey = String(x?.countryKey || cInfo.key || 'global').toLowerCase();
+    return !(itemSrv === targetSrv && itemCountryKey === targetCountryKey);
+  });
+
+  const removedCount = beforeCount - state.customNumbers.length;
+  await dbPut('customNumbers/list', state.customNumbers);
+
+  await ctx.answerCbQuery(`${removedCount} টি নম্বর ডিলিট হয়েছে`);
+  await showAdminBoardInReplyMenu(
+    ctx,
+    `🗑️ *${rawSrv}* (${rawCountryKey.toUpperCase()}) এর *${removedCount} টি* নম্বর ডিলিট করা হয়েছে।`
   );
 });
 
@@ -2472,7 +2617,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('IMS REST Bot running with full OTP delivery, ARF channel masking, Num Status, and exhaustion guard...');
+  console.log('IMS REST Bot running with service/country delete, ARF channel masking, clean parsing, and OTP delivery...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
