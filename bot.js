@@ -14,6 +14,9 @@ const SUPPORT_TARGET_ID = 8771921458;
 const DEFAULT_BASE_URL = 'https://nxv-sms.vercel.app';
 const DEFAULT_API_KEY = process.env.API_KEY || 'nxv_live_mwr98oy3_ypnnxbi7zjowac7m';
 
+const TWENTY_MIN_MS = 20 * 60 * 1000;
+const TEN_MIN_MS = 10 * 60 * 1000;
+
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
   process.exit(1);
@@ -185,10 +188,7 @@ const state = {
   cachedRanges: null
 };
 
-let isInitialNewNumScan = true;
-const lastKnownCounts = new Map();
-const lastKnownServiceRangeHits = new Map();
-let isInitialHitScan = true;
+const hitSnapshotsByKey = new Map();
 
 function getBaseUrl() {
   const cleaned = String(state.baseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
@@ -419,11 +419,6 @@ async function dbPut(dbPath, data) {
     console.error('Firebase PUT error:', e.response?.status || e.message);
     return false;
   }
-}
-
-async function persistSeenNewItems() {
-  const arr = [...state.seenNewItems].slice(-500);
-  await dbPut('config/seenNewItems', arr);
 }
 
 async function registerUser(userId) {
@@ -976,106 +971,35 @@ async function sendNewNumberNotificationToUsers(summary) {
   }
 }
 
-async function extractPanelNewItems() {
-  if (!isApiReady()) return [];
-  const aggregated = new Map();
-
-  const ranges = await fetchActiveRanges();
-  for (const r of ranges) {
-    if (!r || typeof r !== 'object') continue;
-
-    const srv =
-      String(r.service || r.app || r.app_name || r.name || 'Number').trim() || 'Number';
-    const rawCountry = String(
-      r.country || r.countryName || r.country_name || r.iso || ''
-    ).trim();
-    const rng = String(r.range || r.prefix || r.code || '').trim();
-    const phone = normalizePhone(
-      r.phoneNumber || r.number || r.phone || r.mobile || ''
-    );
-    const cInfo = resolveCountryInfo(phone || rng || rawCountry, rawCountry);
-
-    const hasRealNumber = Boolean(phone);
-    const hasRealRange = Boolean(rng && !/x{2,}/i.test(rng));
-    if (!hasRealNumber && !hasRealRange && !rawCountry) continue;
-
-    const bucketKey = `${srv.toLowerCase()}__${cInfo.key}__${(rng || rawCountry || 'auto').toLowerCase()}`;
-    const apiQty = Number(
-      r.count ?? r.available ?? r.stock ?? r.quantity ?? r.numbersCount ?? r.total ?? (hasRealNumber ? 1 : 1)
-    );
-    const qty = Number.isFinite(apiQty) && apiQty > 0 ? apiQty : 1;
-
-    if (!aggregated.has(bucketKey)) {
-      aggregated.set(bucketKey, {
-        bucketKey,
-        service: srv,
-        countryLabel: cInfo.label,
-        countryName: cInfo.name,
-        flag: cInfo.flag,
-        totalNow: 0,
-        phones: []
-      });
-    }
-
-    const entry = aggregated.get(bucketKey);
-    entry.totalNow += qty;
-    if (phone && !entry.phones.includes(phone)) {
-      entry.phones.push(phone);
-    }
-  }
-
-  const groupedAlerts = new Map();
-
-  for (const [bucketKey, entry] of aggregated.entries()) {
-    const prevCount = lastKnownCounts.get(bucketKey) ?? 0;
-    const seenBucketKey = `bucket_${bucketKey}`;
-
-    if (isInitialNewNumScan) {
-      lastKnownCounts.set(bucketKey, entry.totalNow);
-      state.seenNewItems.add(seenBucketKey);
-      entry.phones.forEach((p) => state.seenNewItems.add(`num_${bucketKey}_${p}`));
-      continue;
-    }
-
-    const isBrandNewBucket = !state.seenNewItems.has(seenBucketKey);
-    const unseenPhones = entry.phones.filter(
-      (p) => !state.seenNewItems.has(`num_${bucketKey}_${p}`)
-    );
-
-    let addedQty = 0;
-    if (entry.phones.length > 0) {
-      addedQty = unseenPhones.length;
-    } else if (entry.totalNow > prevCount) {
-      addedQty = entry.totalNow - prevCount;
-    } else if (isBrandNewBucket && entry.totalNow > 0) {
-      addedQty = entry.totalNow;
-    }
-
-    lastKnownCounts.set(bucketKey, entry.totalNow);
-    state.seenNewItems.add(seenBucketKey);
-    unseenPhones.forEach((p) => state.seenNewItems.add(`num_${bucketKey}_${p}`));
-
-    if (addedQty > 0) {
-      const summaryKey = `${entry.service.toLowerCase()}__${entry.countryLabel}`;
-      if (!groupedAlerts.has(summaryKey)) {
-        groupedAlerts.set(summaryKey, {
-          service: entry.service,
-          countryLabel: entry.countryLabel,
-          countryName: entry.countryName,
-          flag: entry.flag,
-          count: 0
-        });
-      }
-      groupedAlerts.get(summaryKey).count += addedQty;
-    }
-  }
-
-  return [...groupedAlerts.values()];
+function recordHitSnapshot(key, hits, now = Date.now()) {
+  const list = hitSnapshotsByKey.get(key) || [];
+  list.push({ ts: now, hits: Number(hits || 0) });
+  const cutoff = now - 30 * 60 * 1000;
+  const trimmed = list.filter((entry) => entry.ts >= cutoff);
+  hitSnapshotsByKey.set(key, trimmed);
+  return trimmed;
 }
 
-async function detectRisingHitsRanges() {
+function getHitsFromTenMinutesAgo(key, now = Date.now()) {
+  const list = hitSnapshotsByKey.get(key) || [];
+  if (!list.length) return null;
+
+  const targetTs = now - TEN_MIN_MS;
+  let best = null;
+  for (const entry of list) {
+    if (entry.ts <= targetTs + 30 * 1000) {
+      if (!best || Math.abs(entry.ts - targetTs) < Math.abs(best.ts - targetTs)) {
+        best = entry;
+      }
+    }
+  }
+  return best ? best.hits : list[0].hits;
+}
+
+async function collectLast10MinHitUpdates() {
   if (!isApiReady()) return [];
   const ranges = await fetchActiveRanges();
+  const now = Date.now();
   const currentMap = new Map();
 
   for (const r of ranges) {
@@ -1098,38 +1022,40 @@ async function detectRisingHitsRanges() {
         countryLabel: cInfo.label,
         countryName: cInfo.name,
         flag: cInfo.flag,
-        hits: 0
+        hitsNow: 0
       });
     }
-    currentMap.get(key).hits += hits;
+    currentMap.get(key).hitsNow += hits;
   }
 
-  const risingList = [];
+  const updates = [];
   for (const [key, item] of currentMap.entries()) {
-    const prevHits = lastKnownServiceRangeHits.get(key);
-    lastKnownServiceRangeHits.set(key, item.hits);
+    const prev10MinHits = getHitsFromTenMinutesAgo(key, now);
+    recordHitSnapshot(key, item.hitsNow, now);
 
-    if (!isInitialHitScan && typeof prevHits === 'number' && item.hits > prevHits) {
-      risingList.push({
-        ...item,
-        addedHits: item.hits - prevHits
-      });
+    if (typeof prev10MinHits === 'number') {
+      const gainedLast10Min = item.hitsNow - prev10MinHits;
+      if (gainedLast10Min > 0) {
+        updates.push({
+          ...item,
+          gainedLast10Min
+        });
+      }
     }
   }
 
-  isInitialHitScan = false;
-  return risingList;
+  return updates;
 }
 
-async function sendHitSpikeNotificationToUsers(item) {
+async function sendTwentyMinNotificationToUsers(item) {
   if (!state.newNumberNotify || !Array.isArray(state.users) || !state.users.length) return;
 
   const text =
-    `🔥 *LIVE HIT ALERT*\n` +
+    `🔔 *20-MIN HIT UPDATE*\n` +
     `🟦 *Service:* *${item.service}*\n` +
     `🟩 *Country:* *${item.countryLabel}*\n` +
     (item.range && item.range !== 'auto' ? `🔢 *Range:* \`${item.range}\`\n` : '') +
-    `📈 *New Hits:* *+${item.addedHits}* (Total: *${item.hits}*)`;
+    `🔥 *Last 10 Min Hits:* *+${item.gainedLast10Min}* (Now: *${item.hitsNow}*)`;
 
   const markup = {
     inline_keyboard: [
@@ -1148,33 +1074,45 @@ async function sendHitSpikeNotificationToUsers(item) {
     try {
       await rawSendMessage(uid, text, markup);
     } catch (e) {
-      console.error(`[HIT NOTIFY ERR ${uid}]:`, e.message);
+      console.error(`[20M NOTIFY ERR ${uid}]:`, e.message);
     }
   }
 }
 
 setInterval(async () => {
+  if (!isApiReady()) return;
+  try {
+    const ranges = await fetchActiveRanges();
+    const now = Date.now();
+    const tempMap = new Map();
+    for (const r of ranges) {
+      if (!r || typeof r !== 'object') continue;
+      const srv = String(r.service || r.app || r.app_name || r.name || 'Number').trim() || 'Number';
+      const rawCountry = String(r.country || r.countryName || r.country_name || r.iso || '').trim();
+      const rng = String(r.range || r.prefix || r.code || '').trim();
+      const phone = normalizePhone(r.phoneNumber || r.number || r.phone || '');
+      const cInfo = resolveCountryInfo(phone || rng || rawCountry, rawCountry);
+      const effectiveRange = rng || (phone ? phone.replace(/^\+/, '').slice(0, 6) : 'auto');
+      const key = `${srv.toLowerCase()}__${cInfo.key}__${effectiveRange.toLowerCase()}`;
+      tempMap.set(key, (tempMap.get(key) || 0) + extractHitsValue(r));
+    }
+    for (const [key, h] of tempMap.entries()) {
+      recordHitSnapshot(key, h, now);
+    }
+  } catch (_) {}
+}, TEN_MIN_MS);
+
+setInterval(async () => {
   if (!state.newNumberNotify || !isApiReady()) return;
   try {
-    const newItems = await extractPanelNewItems();
-    if (isInitialNewNumScan) {
-      isInitialNewNumScan = false;
-      await persistSeenNewItems();
-    } else if (newItems.length) {
-      for (const item of newItems) {
-        await sendNewNumberNotificationToUsers(item);
-      }
-      await persistSeenNewItems();
-    }
-
-    const risingItems = await detectRisingHitsRanges();
-    for (const rItem of risingItems) {
-      await sendHitSpikeNotificationToUsers(rItem);
+    const updates = await collectLast10MinHitUpdates();
+    for (const item of updates) {
+      await sendTwentyMinNotificationToUsers(item);
     }
   } catch (err) {
-    console.error('[NEW-NUM WATCH ERR]:', err.message);
+    console.error('[20M INTERVAL ERR]:', err.message);
   }
-}, 10000);
+}, TWENTY_MIN_MS);
 
 function buildNumberCard(sess, otp = null) {
   const item = sess.item;
@@ -1834,7 +1772,7 @@ bot.hears(/^(?:🔔 Alert: ON|🔕 Alert: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.newNumberNotify = !state.newNumberNotify;
   await dbPut('config/newNumberNotify', state.newNumberNotify);
-  await showAdminBoardInReplyMenu(ctx, state.newNumberNotify ? '🔔 নতুন নম্বর Alert চালু।' : '🔕 নতুন নম্বর Alert বন্ধ।');
+  await showAdminBoardInReplyMenu(ctx, state.newNumberNotify ? '🔔 ২০-মিনিট হিট Alert চালু।' : '🔕 ২০-মিনিট হিট Alert বন্ধ।');
 });
 
 bot.hears(/^(?:📝 Mode: Short|📄 Mode: Long)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1963,8 +1901,7 @@ bot.on('text', async (ctx) => {
       }
       state.baseUrl = cleanedUrl;
       state.cachedRanges = null;
-      lastKnownServiceRangeHits.clear();
-      isInitialHitScan = true;
+      hitSnapshotsByKey.clear();
       await dbPut('config/baseUrl', cleanedUrl);
       return showAdminBoardInReplyMenu(ctx, `✅ নতুন Base URL সেট হয়েছে: ${cleanedUrl}`);
     }
@@ -2080,7 +2017,7 @@ if (SELF_URL) {
     const [
       u, b, st, hist, baseUrlDb, key, customPool,
       en, rngEn, rewEn, notifEn, shMode, jc,
-      mLink, mId, oLink, oId, rLink, rId, own, vUsers, seenItems
+      mLink, mId, oLink, oId, rLink, rId, own, vUsers
     ] = await Promise.all([
       dbGet('users/list'),
       dbGet('balances'),
@@ -2102,8 +2039,7 @@ if (SELF_URL) {
       dbGet('config/rangeGroupLink'),
       dbGet('config/rangeGroupId'),
       dbGet('config/ownerContact'),
-      dbGet('verifiedUsers'),
-      dbGet('config/seenNewItems')
+      dbGet('verifiedUsers')
     ]);
     if (Array.isArray(u)) state.users = u;
     if (b && typeof b === 'object') state.balances = b;
@@ -2128,7 +2064,6 @@ if (SELF_URL) {
     if (rId) state.rangeGroupId = String(rId);
     if (own) state.ownerContact = String(own);
     if (vUsers && typeof vUsers === 'object') state.verifiedUsers = vUsers;
-    if (Array.isArray(seenItems)) state.seenNewItems = new Set(seenItems);
   }
 
   try {
@@ -2139,7 +2074,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with dynamic Base URL/API Key, custom number pool, live hit alerts, and auto-detecting active services...');
+  console.log('Bot running with 20-min hit notifications, panel & custom number manager, and auto-detecting active services...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
