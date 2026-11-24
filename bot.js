@@ -18,7 +18,7 @@ const IMS_DEFAULT_TOKEN = String(process.env.IMS_API_TOKEN || '').trim();
 
 const TWENTY_MIN_MS = 20 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
-const OTP_POLL_MS = 6000;
+const OTP_POLL_MS = 6500;
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
@@ -358,26 +358,54 @@ function normalizePhone(raw) {
 function parseNumbersFromInput(rawText) {
   const text = String(rawText || '');
   const phones = [];
+  const lines = text.split(/\r?\n/);
 
-  const matches = text.match(/\+?\d[\d\s\-().]{6,22}\d/g) || [];
-  for (const m of matches) {
-    const p = normalizePhone(m);
-    if (p && !phones.includes(p)) {
-      phones.push(p);
-    }
-  }
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (/^range\b/i.test(line) && /\bnumber\b/i.test(line)) continue;
 
-  if (!phones.length) {
-    const chunks = text.split(/[\r\n,;]+/).map((s) => s.trim()).filter(Boolean);
-    for (const chunk of chunks) {
-      const p = normalizePhone(chunk);
-      if (p && !phones.includes(p)) {
-        phones.push(p);
+    const tokens = line.split(/[\t,|;]+|\s{2,}|\s+/);
+    let candidatePhone = null;
+
+    for (const tok of tokens) {
+      const cleanTok = tok.trim();
+      if (!cleanTok) continue;
+      if (/[.$@/A-Za-z_-]/.test(cleanTok)) continue;
+
+      if (/^\d{8,15}$/.test(cleanTok)) {
+        const normalized = normalizePhone(cleanTok);
+        if (normalized) {
+          candidatePhone = normalized;
+          break;
+        }
       }
+    }
+
+    if (candidatePhone && !phones.includes(candidatePhone)) {
+      phones.push(candidatePhone);
     }
   }
 
   return phones;
+}
+
+function maskPhoneForPublicChannel(rawPhone) {
+  const digits = String(rawPhone || '').replace(/[^\d]/g, '');
+  if (!digits) return 'ARF';
+
+  if (digits.length >= 7) {
+    const lastThree = digits.slice(-3);
+    const prefixPart = digits.slice(0, digits.length - 6);
+    return `${prefixPart}ARF${lastThree}`;
+  }
+
+  if (digits.length > 3) {
+    const lastThree = digits.slice(-3);
+    return `ARF${lastThree}`;
+  }
+
+  return `ARF${digits}`;
 }
 
 function formatDashedOtp(otpRaw) {
@@ -386,6 +414,23 @@ function formatDashedOtp(otpRaw) {
   if (clean.length === 5) return `${clean.slice(0, 2)}-${clean.slice(2)}`;
   if (clean.length === 4) return `${clean.slice(0, 2)}-${clean.slice(2)}`;
   return String(otpRaw || '').trim();
+}
+
+function extractOtpCodeFromText(textBody) {
+  const raw = String(textBody || '').trim();
+  if (!raw) return null;
+
+  const labeledMatch = raw.match(/(?:code|otp|pin|verification|verify|telegram|whatsapp)[^\d]{0,12}(\d{4,8})\b/i);
+  if (labeledMatch) return labeledMatch[1];
+
+  const dashedMatch = raw.match(/\b(\d{2,4})[-–](\d{2,4})\b/);
+  if (dashedMatch) {
+    const joined = `${dashedMatch[1]}${dashedMatch[2]}`;
+    if (/^\d{4,8}$/.test(joined)) return joined;
+  }
+
+  const standaloneMatch = raw.match(/\b\d{4,8}\b/);
+  return standaloneMatch ? standaloneMatch[0] : null;
 }
 
 function getServiceShortTag(service) {
@@ -1063,7 +1108,10 @@ async function requestOtpFromIms(_orderId, phone) {
     .toISOString()
     .replace('T', ' ')
     .slice(0, 19);
-  const dateTo = nowUtc.toISOString().replace('T', ' ').slice(0, 19);
+  const dateTo = new Date(nowUtc.getTime() + 60 * 60 * 1000)
+    .toISOString()
+    .replace('T', ' ')
+    .slice(0, 19);
 
   const res = await callImsPanel(
     ep.messages,
@@ -1071,7 +1119,7 @@ async function requestOtpFromIms(_orderId, phone) {
       date_from: dateFrom,
       date_to: dateTo,
       filter_number: cleanDigits,
-      records: 10
+      records: 20
     },
     15000
   );
@@ -1086,12 +1134,19 @@ async function requestOtpFromIms(_orderId, phone) {
     : [];
 
   for (const row of rows) {
-    const rowPhone = String(row?.number || row?.to || row?.destination || row?.phone || '').replace(/[^\d]/g, '');
-    if (rowPhone && !rowPhone.endsWith(cleanDigits) && !cleanDigits.endsWith(rowPhone)) continue;
+    const rowPhone = String(
+      row?.number || row?.to || row?.destination || row?.phone || row?.did || ''
+    ).replace(/[^\d]/g, '');
 
-    const textBody = String(row?.message || row?.text || row?.sms || row?.body || row?.otp || '');
-    const match = textBody.match(/\b\d{4,8}\b/);
-    if (match) return match[0];
+    if (rowPhone && !rowPhone.endsWith(cleanDigits) && !cleanDigits.endsWith(rowPhone)) {
+      continue;
+    }
+
+    const textBody = String(
+      row?.message || row?.text || row?.sms || row?.body || row?.otp || row?.code || ''
+    );
+    const code = extractOtpCodeFromText(textBody);
+    if (code) return code;
   }
 
   return null;
@@ -1110,6 +1165,7 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   const { sendToUser = true } = options;
   const formattedOtp = formatDashedOtp(rawOtp);
   const digits = String(item.phone || '').replace(/[^\d]/g, '');
+  const maskedPhone = maskPhoneForPublicChannel(digits);
   const serviceName = item.service || 'WhatsApp';
 
   if (sendToUser && uid) {
@@ -1137,7 +1193,7 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   if (!otpGroupTarget) {
     return {
       ok: false,
-      reason: 'OTP Group ID বা Username সেট করা নেই (প্রাইভেট লিংক দিলে সাথে -100... Chat ID দিন)।'
+      reason: 'OTP Group/Channel ID বা Username সেট করা নেই (প্রাইভেট লিংক দিলে সাথে -100... Chat ID দিন)।'
     };
   }
 
@@ -1146,10 +1202,10 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   const rngCode = item.range && item.range !== 'auto' ? String(item.range) : digits.slice(0, 6);
 
   const groupText = state.shortMsgMode
-    ? `🟩 *OTP* 🟩 ${item.flag} *${item.countryName}* \`+${digits}\` | \`${formattedOtp}\``
+    ? `🟩 *OTP* 🟩 ${item.flag} *${item.countryName}* \`${maskedPhone}\` | \`${formattedOtp}\``
     : `🟩 *LIVE OTP BOARD*\n` +
       `🟦 *${item.flag} ${item.countryName}* 🟢 *${shortTag}*\n` +
-      `🟪 \`#${item.countryIso}\` *+${digits}*\n` +
+      `🟪 \`#${item.countryIso}\` *${maskedPhone}*\n` +
       `🟨 *Prefix:* \`${prefix}\` | *Range:* \`#${rngCode}\`\n` +
       `🔐 *OTP:* \`${formattedOtp}\``;
 
@@ -1712,7 +1768,7 @@ bot.action(/^ask_rng_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🟨 *CUSTOM RANGE BOARD*\n🟦 *${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: \`22879\`)*`,
+    `🟨 *CUSTOM RANGE BOARD*\n🟦 *${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: \`84123\`)*`,
     {
       inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'cancel_rng_input', style: 'danger' }]]
     },
@@ -1957,11 +2013,11 @@ bot.hears(/^🧪 Test SMS(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const sampleItem = {
     service: 'Telegram',
-    range: '22879',
-    phone: '+22879410829',
-    countryName: 'Togo',
-    countryIso: 'TG',
-    flag: '🇹🇬'
+    range: '84123',
+    phone: '+84123031469',
+    countryName: 'Vietnam',
+    countryIso: 'VN',
+    flag: '🇻🇳'
   };
   const sent = await deliverOtpToUserAndGroup(ctx.from.id, sampleItem, '284915', {
     sendToUser: false
@@ -2251,7 +2307,7 @@ bot.on('text', async (ctx) => {
         ctx,
         `➕ *ADD NUMBER — ধাপ ২/৩ (দেশ)*\n` +
           `🟦 *সার্ভিস:* *${txt}*\n` +
-          `🟩 *দেশের নাম বা কোড লিখুন (যেমন: \`Togo\`, \`Bangladesh\`, \`US\`)*`,
+          `🟩 *দেশের নাম বা কোড লিখুন (যেমন: \`Vietnam\`, \`Bangladesh\`, \`US\`)*`,
         { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
         false
       );
@@ -2416,7 +2472,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('IMS REST Bot running with ranges/numbers/messages support, 20-min hit updates, Num Status, and exhaustion guard...');
+  console.log('IMS REST Bot running with full OTP delivery, ARF channel masking, Num Status, and exhaustion guard...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
