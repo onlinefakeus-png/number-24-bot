@@ -11,11 +11,14 @@ const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
 const ADMIN_IDS = [8771921458];
 const SUPPORT_TARGET_ID = 8771921458;
 
-const DEFAULT_BASE_URL = 'https://nxv-sms.vercel.app';
-const DEFAULT_API_KEY = process.env.API_KEY || 'nxv_live_mwr98oy3_ypnnxbi7zjowac7m';
+const IMS_DEFAULT_URL = String(process.env.IMS_BASE_URL || 'https://imssms.org/api/v1/rest')
+  .trim()
+  .replace(/\/+$/, '');
+const IMS_DEFAULT_TOKEN = String(process.env.IMS_API_TOKEN || '').trim();
 
 const TWENTY_MIN_MS = 20 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
+const OTP_POLL_MS = 6000;
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
@@ -160,8 +163,8 @@ const state = {
   rewardEnabled: true,
   shortMsgMode: false,
   newNumberNotify: true,
-  baseUrl: DEFAULT_BASE_URL,
-  apiKey: DEFAULT_API_KEY,
+  baseUrl: IMS_DEFAULT_URL,
+  apiKey: IMS_DEFAULT_TOKEN,
   customNumbers: [],
   joinCheckEnabled: true,
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/nhbdofficial',
@@ -184,99 +187,93 @@ const state = {
   waitingSupportFrom: new Set(),
   waitingRangeFrom: new Map(),
   adminWizard: new Map(),
-  seenNewItems: new Set(),
-  cachedRanges: null
+  cachedRanges: null,
+  cachedNumbers: null
 };
 
 const hitSnapshotsByKey = new Map();
+let lastImsCallTs = 0;
 
-function getBaseUrl() {
-  const cleaned = String(state.baseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
-  return /^https?:\/\//i.test(cleaned) ? cleaned : DEFAULT_BASE_URL;
+function getImsBaseUrl() {
+  const cleaned = String(state.baseUrl || IMS_DEFAULT_URL || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\//i.test(cleaned) ? cleaned : '';
 }
 
-function getPanelUrls() {
-  const b = getBaseUrl();
-  const isStub = /handler_api\.php$/i.test(b);
-  if (isStub) {
+function getImsApiToken() {
+  return String(state.apiKey || IMS_DEFAULT_TOKEN || '').trim();
+}
+
+function maskImsToken(token) {
+  const t = String(token || '').trim();
+  if (!t) return 'Not Set';
+  if (t.length <= 10) return `${t.slice(0, 3)}****`;
+  return `${t.slice(0, 8)}••••••••••••${t.slice(-4)}`;
+}
+
+function isImsReady() {
+  return Boolean(state.apiEnabled && getImsBaseUrl() && getImsApiToken());
+}
+
+function getImsEndpoints() {
+  const b = getImsBaseUrl();
+  if (!b) {
     return {
-      base: b,
-      getNumber: b,
-      getOtp: b,
-      activeRange: b,
-      cancelNumber: b,
-      balance: b,
-      isStub: true
+      base: '',
+      ranges: '',
+      numbers: '',
+      cdrs: '',
+      messages: ''
     };
   }
   return {
     base: b,
-    getNumber: `${b}/get-number`,
-    getOtp: `${b}/get-otp`,
-    activeRange: `${b}/active-rangre`,
-    cancelNumber: `${b}/cancel-number`,
-    balance: `${b}/balance`,
-    isStub: false
+    ranges: `${b}/ranges`,
+    numbers: `${b}/numbers`,
+    cdrs: `${b}/cdrs`,
+    messages: `${b}/messages`
   };
 }
 
-function getApiKey() {
-  return String(state.apiKey || DEFAULT_API_KEY || '').trim();
-}
-
-function maskApiKey(key) {
-  const k = String(key || '').trim();
-  if (!k) return 'Not Set';
-  if (k.length <= 12) return `${k.slice(0, 4)}****`;
-  return `${k.slice(0, 10)}••••••••••••${k.slice(-5)}`;
-}
-
-function isApiReady() {
-  return Boolean(state.apiEnabled && getApiKey() && getBaseUrl());
-}
-
-function buildPanelUrl(endpointUrl, extraParams = {}) {
+function buildImsUrl(endpointUrl, extraParams = {}) {
   const rawEndpoint = String(endpointUrl || '').trim();
-  const base = getBaseUrl();
+  const base = getImsBaseUrl();
   const validEndpoint = /^https?:\/\//i.test(rawEndpoint)
     ? rawEndpoint
     : `${base}/${rawEndpoint.replace(/^\/+/, '')}`;
 
-  const key = getApiKey();
+  const token = getImsApiToken();
   const merged = {
-    api_key: key,
-    apiKey: key,
-    key,
+    token,
     ...extraParams
   };
 
-  try {
-    const url = new URL(validEndpoint);
-    Object.entries(merged).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && String(v).trim() !== '') {
-        url.searchParams.set(k, String(v).trim());
-      }
-    });
-    return url.toString();
-  } catch (_) {
-    const qs = new URLSearchParams();
-    Object.entries(merged).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && String(v).trim() !== '') {
-        qs.set(k, String(v).trim());
-      }
-    });
-    const sep = validEndpoint.includes('?') ? '&' : '?';
-    return `${validEndpoint}${sep}${qs.toString()}`;
-  }
+  const url = new URL(validEndpoint);
+  Object.entries(merged).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      url.searchParams.set(k, String(v).trim());
+    }
+  });
+  return url.toString();
 }
 
-async function callPanel(endpointUrl, extraParams = {}, timeout = 20000) {
-  const fullUrl = buildPanelUrl(endpointUrl, extraParams);
+async function paceImsRateLimit() {
+  const now = Date.now();
+  const waitMs = Math.max(0, 1100 - (now - lastImsCallTs));
+  if (waitMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  lastImsCallTs = Date.now();
+}
+
+async function callImsPanel(endpointUrl, extraParams = {}, timeout = 20000) {
+  await paceImsRateLimit();
+  const token = getImsApiToken();
+  const fullUrl = buildImsUrl(endpointUrl, extraParams);
   return axios.get(fullUrl, {
     timeout,
     headers: {
-      'x-api-key': getApiKey(),
-      Authorization: `Bearer ${getApiKey()}`
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json'
     }
   });
 }
@@ -351,8 +348,36 @@ function resolveCountryInfo(primaryInput, secondaryInput = '') {
 }
 
 function normalizePhone(raw) {
-  const digits = String(raw || '').replace(/[^\d]/g, '');
-  return digits.length >= 6 && digits.length <= 15 ? `+${digits}` : null;
+  let digits = String(raw || '').replace(/[^\d]/g, '');
+  if (digits.startsWith('00') && digits.length > 8) {
+    digits = digits.slice(2);
+  }
+  return digits.length >= 7 && digits.length <= 15 ? `+${digits}` : null;
+}
+
+function parseNumbersFromInput(rawText) {
+  const text = String(rawText || '');
+  const phones = [];
+
+  const matches = text.match(/\+?\d[\d\s\-().]{6,22}\d/g) || [];
+  for (const m of matches) {
+    const p = normalizePhone(m);
+    if (p && !phones.includes(p)) {
+      phones.push(p);
+    }
+  }
+
+  if (!phones.length) {
+    const chunks = text.split(/[\r\n,;]+/).map((s) => s.trim()).filter(Boolean);
+    for (const chunk of chunks) {
+      const p = normalizePhone(chunk);
+      if (p && !phones.includes(p)) {
+        phones.push(p);
+      }
+    }
+  }
+
+  return phones;
 }
 
 function formatDashedOtp(otpRaw) {
@@ -533,10 +558,11 @@ function getAdminPanelAsMainKeyboard() {
         { text: '📡 Range API ⋮⋮⋮⋮', style: 'success' }
       ],
       [
-        { text: '🔗 Endpoints ⋮⋮⋮⋮', style: 'primary' },
-        { text: '🛡️ Info ⋮⋮⋮⋮', style: 'primary' }
+        { text: '📊 Num Status ⋮⋮⋮⋮', style: 'primary' },
+        { text: '🔗 Endpoints ⋮⋮⋮⋮', style: 'primary' }
       ],
       [
+        { text: '🛡️ Info ⋮⋮⋮⋮', style: 'primary' },
         { text: '⬅️ Main Menu ⋮⋮⋮⋮', style: 'danger' }
       ]
     ],
@@ -689,40 +715,158 @@ function normalizeActiveRangeList(rawData) {
 }
 
 async function fetchActiveRanges() {
-  if (!isApiReady()) return [];
-  if (state.cachedRanges && Date.now() - state.cachedRanges.ts < 12000) {
+  if (!isImsReady()) return [];
+  if (state.cachedRanges && Date.now() - state.cachedRanges.ts < 15000) {
     return state.cachedRanges.items;
   }
-  const urls = getPanelUrls();
+  const ep = getImsEndpoints();
   try {
-    const extra = urls.isStub ? { action: 'getRanges' } : {};
-    const res = await callPanel(urls.activeRange, extra, 20000);
+    const res = await callImsPanel(ep.ranges, {}, 20000);
     const list = normalizeActiveRangeList(res.data);
     state.cachedRanges = { items: list, ts: Date.now() };
     return list;
   } catch (err) {
-    console.error('[ACTIVE-RANGE ERR]:', err.response?.data || err.message);
-    if (state.cachedRanges?.items?.length) {
-      return state.cachedRanges.items;
-    }
-    return [];
+    console.error('[IMS RANGES ERR]:', err.response?.data || err.message);
+    return state.cachedRanges?.items || [];
+  }
+}
+
+async function fetchImsNumbersList() {
+  if (!isImsReady()) return [];
+  if (state.cachedNumbers && Date.now() - state.cachedNumbers.ts < 15000) {
+    return state.cachedNumbers.items;
+  }
+  const ep = getImsEndpoints();
+  try {
+    const res = await callImsPanel(ep.numbers, {}, 20000);
+    const list = normalizeActiveRangeList(res.data);
+    state.cachedNumbers = { items: list, ts: Date.now() };
+    return list;
+  } catch (err) {
+    console.error('[IMS NUMBERS ERR]:', err.response?.data || err.message);
+    return state.cachedNumbers?.items || [];
   }
 }
 
 async function fetchPanelBalanceRaw() {
-  if (!isApiReady()) return null;
-  const urls = getPanelUrls();
+  if (!isImsReady()) return null;
+  const ep = getImsEndpoints();
   try {
-    const extra = urls.isStub ? { action: 'getBalance' } : {};
-    const res = await callPanel(urls.balance, extra, 15000);
-    if (typeof res.data === 'string' && res.data.startsWith('ACCESS_BALANCE:')) {
-      return { balance: Number(res.data.split(':')[1] || 0), currency: 'USD' };
-    }
-    return res.data || null;
+    const [rangesRes, numbersRes] = await Promise.all([
+      callImsPanel(ep.ranges, {}, 15000).catch(() => ({ data: [] })),
+      callImsPanel(ep.numbers, {}, 15000).catch(() => ({ data: [] }))
+    ]);
+    const rangesCount = normalizeActiveRangeList(rangesRes.data).length;
+    const numbersCount = normalizeActiveRangeList(numbersRes.data).length;
+    return {
+      api: 'IMS REST v1',
+      status: 'connected',
+      rangesCount,
+      numbersCount
+    };
   } catch (err) {
-    console.error('[BALANCE ERR]:', err.response?.data || err.message);
+    console.error('[IMS STATUS ERR]:', err.response?.data || err.message);
     return null;
   }
+}
+
+function getAlreadyUsedPhoneDigitsSet() {
+  const usedDigits = new Set();
+
+  for (const h of state.numberHistory || []) {
+    const d = String(h?.phone || '').replace(/[^\d]/g, '');
+    if (d) usedDigits.add(d);
+  }
+
+  for (const c of state.customNumbers || []) {
+    if (c?.used && c?.phone) {
+      const d = String(c.phone).replace(/[^\d]/g, '');
+      if (d) usedDigits.add(d);
+    }
+  }
+
+  for (const [, sess] of state.userSession.entries()) {
+    if (sess?.item?.phone) {
+      const d = String(sess.item.phone).replace(/[^\d]/g, '');
+      if (d) usedDigits.add(d);
+    }
+  }
+
+  return usedDigits;
+}
+
+async function getPanelAndPoolNumberUsageStats() {
+  const customList = Array.isArray(state.customNumbers) ? state.customNumbers : [];
+  const customUsed = customList.filter((x) => Boolean(x?.used)).length;
+  const customUnused = customList.filter((x) => !x?.used).length;
+
+  const usedPhoneSet = getAlreadyUsedPhoneDigitsSet();
+
+  let imsTotal = 0;
+  let imsUsed = 0;
+  let imsUnused = 0;
+  let imsError = '';
+
+  if (!isImsReady()) {
+    imsError = 'IMS API সেট বা চালু নেই';
+  } else {
+    try {
+      const ep = getImsEndpoints();
+      const [numRes, msgRes] = await Promise.all([
+        callImsPanel(ep.numbers, {}, 20000),
+        callImsPanel(ep.messages, { records: 100 }, 20000).catch(() => ({ data: [] }))
+      ]);
+
+      const rawNums = normalizeActiveRangeList(numRes.data);
+      const rawMsgs = Array.isArray(msgRes.data?.data)
+        ? msgRes.data.data
+        : Array.isArray(msgRes.data?.messages)
+        ? msgRes.data.messages
+        : Array.isArray(msgRes.data)
+        ? msgRes.data
+        : [];
+
+      const msgPhoneDigits = new Set();
+      for (const m of rawMsgs) {
+        const d = String(m?.number || m?.to || m?.destination || m?.phone || '').replace(/[^\d]/g, '');
+        if (d) msgPhoneDigits.add(d);
+      }
+
+      const uniquePanelPhones = new Set();
+      for (const row of rawNums) {
+        const p = normalizePhone(
+          row?.number || row?.phone || row?.phoneNumber || row?.msisdn || row?.did || ''
+        );
+        const digits = p ? p.replace(/[^\d]/g, '') : String(row?.id || '').trim();
+        if (!digits || uniquePanelPhones.has(digits)) continue;
+        uniquePanelPhones.add(digits);
+        imsTotal += 1;
+
+        const isRowUsed =
+          Boolean(row?.used) ||
+          Boolean(row?.assigned) ||
+          String(row?.status || '').toLowerCase() === 'used' ||
+          usedPhoneSet.has(digits) ||
+          [...msgPhoneDigits].some((md) => md.endsWith(digits) || digits.endsWith(md));
+
+        if (isRowUsed) imsUsed += 1;
+        else imsUnused += 1;
+      }
+    } catch (err) {
+      console.error('[NUM STATUS ERR]:', err.response?.data || err.message);
+      imsError = 'প্যানেল নম্বর স্ট্যাটাস আনতে সমস্যা হয়েছে';
+    }
+  }
+
+  return {
+    customTotal: customList.length,
+    customUsed,
+    customUnused,
+    imsTotal,
+    imsUsed,
+    imsUnused,
+    imsError
+  };
 }
 
 function pickCustomNumberFromPool(service = 'Telegram', range = '', countryHint = '') {
@@ -754,10 +898,62 @@ function pickCustomNumberFromPool(service = 'Telegram', range = '', countryHint 
   return chosen;
 }
 
-// =========================================================================
-// ১. GET NUMBER ফাংশন (আগের নিয়মে: সার্ভিস -> দেশ -> নম্বর)
-// =========================================================================
-async function requestGetNumberFromPanel(service = 'Telegram', range = '') {
+async function pickImsNumberFromApi(service = 'Telegram', range = '', countryHint = '') {
+  if (!isImsReady()) return null;
+  const nums = await fetchImsNumbersList();
+  const cleanRangeDigits = String(range || '').replace(/[^\d]/g, '');
+  const cleanCountry = String(countryHint || '').trim().toLowerCase();
+  const usedDigits = getAlreadyUsedPhoneDigitsSet();
+
+  for (const row of nums) {
+    const isRowAlreadyUsed =
+      Boolean(row?.used) ||
+      Boolean(row?.assigned) ||
+      String(row?.status || '').toLowerCase() === 'used';
+    if (isRowAlreadyUsed) continue;
+
+    const phone = normalizePhone(
+      row?.number || row?.phone || row?.phoneNumber || row?.msisdn || row?.did || ''
+    );
+    if (!phone) continue;
+
+    const digits = phone.replace(/[^\d]/g, '');
+    if (usedDigits.has(digits)) continue;
+
+    const cInfo = resolveCountryInfo(phone, row?.country || row?.country_name || cleanCountry);
+
+    if (cleanCountry && cleanCountry !== 'auto') {
+      if (cInfo.name.toLowerCase() !== cleanCountry && cInfo.key !== cleanCountry) {
+        continue;
+      }
+    }
+
+    if (cleanRangeDigits && range !== 'auto') {
+      const rowRange = String(row?.range || row?.prefix || '').replace(/[^\d]/g, '');
+      if (!digits.startsWith(cleanRangeDigits) && rowRange !== cleanRangeDigits) {
+        continue;
+      }
+    }
+
+    return {
+      service: String(service || row?.service || 'Telegram').trim() || 'Telegram',
+      range: cleanRangeDigits || (range && range !== 'auto' ? range : 'auto'),
+      phone,
+      orderId: row?.id || `IMS-${digits}`,
+      countryKey: cInfo.key,
+      countryName: cInfo.name,
+      countryIso: cInfo.iso,
+      countryLabel: cInfo.label,
+      flag: cInfo.flag,
+      dial: cInfo.dial
+    };
+  }
+
+  return null;
+}
+
+// ১. GET NUMBER (আগের নিয়মে: সার্ভিস -> দেশ -> নম্বর)
+async function requestGetNumberFromIms(service = 'Telegram', range = '') {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const customHit = pickCustomNumberFromPool(cleanService, range);
   if (customHit) {
@@ -777,70 +973,13 @@ async function requestGetNumberFromPanel(service = 'Telegram', range = '') {
     };
   }
 
-  if (!isApiReady()) return { error: 'API বন্ধ বা API Key নেই।' };
-  const urls = getPanelUrls();
-  const params = urls.isStub
-    ? { action: 'getNumber', service: cleanService }
-    : { service: cleanService };
+  const imsHit = await pickImsNumberFromApi(cleanService, state.rangeEnabled ? range : '', '');
+  if (imsHit) return imsHit;
 
-  if (state.rangeEnabled && range && range !== 'auto') {
-    params.range = range;
-    params.prefix = range;
-  }
-
-  const res = await callPanel(urls.getNumber, params, 15000);
-  const raw = res.data;
-
-  if (typeof raw === 'string' && raw.startsWith('ACCESS_NUMBER:')) {
-    const parts = raw.split(':');
-    const phone = normalizePhone(parts[2] || '');
-    if (!phone) return { error: 'নম্বর ফরম্যাট সঠিক নয়।' };
-    const cInfo = resolveCountryInfo(phone, range);
-    return {
-      service: cleanService,
-      range: state.rangeEnabled && range && range !== 'auto' ? range : 'auto',
-      phone,
-      orderId: parts[1] || null,
-      countryKey: cInfo.key,
-      countryName: cInfo.name,
-      countryIso: cInfo.iso,
-      countryLabel: cInfo.label,
-      flag: cInfo.flag,
-      dial: cInfo.dial
-    };
-  }
-
-  const d = raw && typeof raw === 'object' ? raw : {};
-  if (d.success === false) {
-    return { error: d.error || d.message || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
-  }
-
-  const phone = normalizePhone(
-    d.phoneNumber || d.number || d.phone || d.mobile || d.data?.phoneNumber || d.data?.number || ''
-  );
-  if (!phone) {
-    return { error: d.message || d.error || 'এই রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
-  }
-
-  const rawCountry = d.country || d.countryName || d.iso || d.data?.country || d.data?.countryName || '';
-  const countryInfo = resolveCountryInfo(phone, rawCountry);
-  return {
-    service: cleanService,
-    range: state.rangeEnabled && range && range !== 'auto' ? range : 'auto',
-    phone,
-    orderId: d.orderId || d.order_id || d.id || d.data?.orderId || d.data?.order_id || null,
-    countryKey: countryInfo.key,
-    countryName: countryInfo.name,
-    countryIso: countryInfo.iso,
-    countryLabel: countryInfo.label,
-    flag: countryInfo.flag,
-    dial: countryInfo.dial
-  };
+  return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
 }
 
-// =========================================================================
 // ২. NOTIFICATION BUTTON নম্বর নেওয়ার আলাদা ফাংশন
-// =========================================================================
 async function requestNotificationNumber(service = 'Telegram', range = 'auto', country = '') {
   const cleanService = String(service || 'Telegram').trim() || 'Telegram';
   const cleanRange = String(range || 'auto').trim() || 'auto';
@@ -864,68 +1003,10 @@ async function requestNotificationNumber(service = 'Telegram', range = 'auto', c
     };
   }
 
-  if (!isApiReady()) return { error: 'API বন্ধ বা API Key নেই।' };
-  const urls = getPanelUrls();
-  const params = urls.isStub
-    ? { action: 'getNumber', service: cleanService }
-    : { service: cleanService };
+  const imsHit = await pickImsNumberFromApi(cleanService, cleanRange, cleanCountry);
+  if (imsHit) return imsHit;
 
-  if (cleanRange && cleanRange !== 'auto') {
-    params.range = cleanRange;
-    params.prefix = cleanRange;
-  }
-  if (cleanCountry) {
-    params.country = cleanCountry;
-  }
-
-  const res = await callPanel(urls.getNumber, params, 15000);
-  const raw = res.data;
-
-  if (typeof raw === 'string' && raw.startsWith('ACCESS_NUMBER:')) {
-    const parts = raw.split(':');
-    const phone = normalizePhone(parts[2] || '');
-    if (!phone) return { error: 'নম্বর ফরম্যাট সঠিক নয়।' };
-    const cInfo = resolveCountryInfo(phone, cleanCountry || cleanRange);
-    return {
-      service: cleanService,
-      range: cleanRange !== 'auto' ? cleanRange : 'auto',
-      phone,
-      orderId: parts[1] || null,
-      countryKey: cInfo.key,
-      countryName: cInfo.name,
-      countryIso: cInfo.iso,
-      countryLabel: cInfo.label,
-      flag: cInfo.flag,
-      dial: cInfo.dial
-    };
-  }
-
-  const d = raw && typeof raw === 'object' ? raw : {};
-  if (d.success === false) {
-    return { error: d.error || d.message || 'এই নোটিফিকেশন রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
-  }
-
-  const phone = normalizePhone(
-    d.phoneNumber || d.number || d.phone || d.mobile || d.data?.phoneNumber || d.data?.number || ''
-  );
-  if (!phone) {
-    return { error: d.message || d.error || 'এই নোটিফিকেশন রেঞ্জে বর্তমানে কোনো নম্বর নেই।' };
-  }
-
-  const rawCountry = d.country || d.countryName || d.iso || d.data?.country || cleanCountry || '';
-  const countryInfo = resolveCountryInfo(phone, rawCountry);
-  return {
-    service: cleanService,
-    range: cleanRange !== 'auto' ? cleanRange : 'auto',
-    phone,
-    orderId: d.orderId || d.order_id || d.id || d.data?.orderId || d.data?.order_id || null,
-    countryKey: countryInfo.key,
-    countryName: countryInfo.name,
-    countryIso: countryInfo.iso,
-    countryLabel: countryInfo.label,
-    flag: countryInfo.flag,
-    dial: countryInfo.dial
-  };
+  return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
 }
 
 async function handleNotificationNumberAction(ctx, service, range, country = '') {
@@ -973,39 +1054,46 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
   }
 }
 
-async function requestOtpFromPanel(orderId, phone) {
-  if (!isApiReady() || (!orderId && !phone)) return null;
-  if (String(orderId || '').startsWith('CUSTOM-')) return null;
-  const urls = getPanelUrls();
-  const params = urls.isStub ? { action: 'getStatus' } : {};
-  if (orderId) {
-    params.orderId = orderId;
-    params.id = orderId;
-  }
-  if (phone) params.phoneNumber = phone;
+async function requestOtpFromIms(_orderId, phone) {
+  if (!isImsReady() || !phone) return null;
+  const ep = getImsEndpoints();
+  const cleanDigits = String(phone).replace(/[^\d]/g, '');
+  const nowUtc = new Date();
+  const dateFrom = new Date(nowUtc.getTime() - 24 * 60 * 60 * 1000)
+    .toISOString()
+    .replace('T', ' ')
+    .slice(0, 19);
+  const dateTo = nowUtc.toISOString().replace('T', ' ').slice(0, 19);
 
-  const res = await callPanel(urls.getOtp, params, 15000);
+  const res = await callImsPanel(
+    ep.messages,
+    {
+      date_from: dateFrom,
+      date_to: dateTo,
+      filter_number: cleanDigits,
+      records: 10
+    },
+    15000
+  );
+
   const raw = res.data;
+  const rows = Array.isArray(raw?.data)
+    ? raw.data
+    : Array.isArray(raw?.messages)
+    ? raw.messages
+    : Array.isArray(raw)
+    ? raw
+    : [];
 
-  if (typeof raw === 'string') {
-    if (/STATUS_OK:/i.test(raw)) {
-      const m = raw.match(/\b\d{4,8}\b/);
-      if (m) return m[0];
-    }
-    return null;
-  }
+  for (const row of rows) {
+    const rowPhone = String(row?.number || row?.to || row?.destination || row?.phone || '').replace(/[^\d]/g, '');
+    if (rowPhone && !rowPhone.endsWith(cleanDigits) && !cleanDigits.endsWith(rowPhone)) continue;
 
-  const d = raw && typeof raw === 'object' ? raw : {};
-  const inner = d.data && typeof d.data === 'object' ? d.data : {};
-
-  const candidates = [d.otp, d.code, d.sms, d.message, inner.otp, inner.code, inner.sms, inner.message];
-  for (const val of candidates) {
-    if (!val) continue;
-    const str = String(val).trim();
-    if (/WAITING|PENDING|NO_SMS|NOT_READY|WAIT/i.test(str)) continue;
-    const match = str.match(/\b\d{4,8}\b/);
+    const textBody = String(row?.message || row?.text || row?.sms || row?.body || row?.otp || '');
+    const match = textBody.match(/\b\d{4,8}\b/);
     if (match) return match[0];
   }
+
   return null;
 }
 
@@ -1143,7 +1231,7 @@ function getHitsFromTenMinutesAgo(key, now = Date.now()) {
 }
 
 async function collectLast10MinHitUpdates() {
-  if (!isApiReady()) return [];
+  if (!isImsReady()) return [];
   const ranges = await fetchActiveRanges();
   const now = Date.now();
   const currentMap = new Map();
@@ -1226,7 +1314,7 @@ async function sendTwentyMinNotificationToUsers(item) {
 }
 
 setInterval(async () => {
-  if (!isApiReady()) return;
+  if (!isImsReady()) return;
   try {
     const ranges = await fetchActiveRanges();
     const now = Date.now();
@@ -1249,7 +1337,7 @@ setInterval(async () => {
 }, TEN_MIN_MS);
 
 setInterval(async () => {
-  if (!state.newNumberNotify || !isApiReady()) return;
+  if (!state.newNumberNotify || !isImsReady()) return;
   try {
     const updates = await collectLast10MinHitUpdates();
     for (const item of updates) {
@@ -1455,21 +1543,22 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   }
   await clearPreviousBoards(ctx.chat.id, ctx.from.id, null);
 
-  const balData = await fetchPanelBalanceRaw();
-  const balAmt = balData?.balance !== undefined ? balData.balance : 0;
-  const currency = balData?.currency || 'BDT';
-  const rate = balData?.perOtpRate !== undefined ? balData.perOtpRate : state.otpReward;
-  const totalNums = balData?.totalNumbers !== undefined ? balData.totalNumbers : state.numberHistory.length;
-  const totalOtps = balData?.totalOtps !== undefined ? balData.totalOtps : state.otpStats.total;
+  const statusData = await fetchPanelBalanceRaw();
+  const rate = state.otpReward;
+  const totalNums = state.numberHistory.length;
+  const totalOtps = state.otpStats.total;
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
+  const apiStatusText = statusData?.status === 'connected'
+    ? `Connected (${statusData.rangesCount} ranges, ${statusData.numbersCount} nos)`
+    : 'Not Connected / Check URL & Token';
 
   const text =
     (statusNote ? `🟨 *STATUS BOARD*\n🟩 *${statusNote}*\n\n` : '') +
-    `🟦 *ADMIN CONTROL BOARD*\n` +
+    `🟦 *IMS ADMIN CONTROL BOARD*\n` +
     `🟩 *Users:* *${state.users.length}* | *Numbers:* *${totalNums}* | *OTPs:* *${totalOtps}*\n` +
-    `🟪 *Balance:* *৳${balAmt}* (${currency}) | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
-    `🟦 *Base URL:* \`${getBaseUrl()}\`\n` +
-    `🟨 *API Key:* \`${maskApiKey(getApiKey())}\`\n` +
+    `🟪 *IMS Status:* *${apiStatusText}* | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
+    `🟦 *IMS URL:* \`${getImsBaseUrl() || 'Not Set'}\`\n` +
+    `🟨 *API Token:* \`${maskImsToken(getImsApiToken())}\`\n` +
     `🟩 *Custom Pool:* *${unusedCustom} টি রেডি নম্বর*\n` +
     `🟦 *Main:* \`${state.mainGroupLink}\` (\`${state.mainGroupId || 'No ID'}\`)\n` +
     `🟩 *OTP:* \`${state.otpGroupLink}\` (\`${state.otpGroupId || 'No ID'}\`)\n` +
@@ -1487,9 +1576,9 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
 async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
   const text =
-    `⚙️ *PANEL & NUMBER MANAGER*\n` +
-    `🟦 *Base URL:* \`${getBaseUrl()}\`\n` +
-    `🟨 *API Key:* \`${maskApiKey(getApiKey())}\`\n` +
+    `⚙️ *IMS PANEL & NUMBER MANAGER*\n` +
+    `🟦 *IMS Base URL:* \`${getImsBaseUrl() || 'Not Set'}\`\n` +
+    `🟨 *IMS API Token:* \`${maskImsToken(getImsApiToken())}\`\n` +
     `🟩 *Ready Added Numbers:* *${unusedCustom} টি*\n\n` +
     `➕ *Add Number* চাপলে ধাপে ধাপে:\n` +
     `১) সার্ভিস → ২) দেশ → ৩) নম্বর বা নম্বর ফাইল দিতে পারবেন।`;
@@ -1497,8 +1586,8 @@ async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
   const markup = {
     inline_keyboard: [
       [
-        { text: '🌐 Set Base URL', callback_data: 'adm_set_baseurl', style: 'primary' },
-        { text: '🔑 Set API Key', callback_data: 'adm_set_apikey', style: 'primary' }
+        { text: '🌐 Set IMS URL', callback_data: 'adm_set_baseurl', style: 'primary' },
+        { text: '🔑 Set API Token', callback_data: 'adm_set_apikey', style: 'primary' }
       ],
       [
         { text: '➕ Add Number', callback_data: 'adm_add_number', style: 'success' }
@@ -1516,7 +1605,7 @@ setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
     if (!sess || !sess.item || sess.otpDelivered || sess.autoChecker === false) continue;
     try {
-      const otp = await requestOtpFromPanel(sess.item.orderId, sess.item.phone);
+      const otp = await requestOtpFromIms(sess.item.orderId, sess.item.phone);
       if (otp) {
         sess.otpDelivered = true;
         sess.otpValue = otp;
@@ -1543,7 +1632,7 @@ setInterval(async () => {
       console.error('[GET-OTP ERR]:', err.response?.data || err.message);
     }
   }
-}, 4000);
+}, OTP_POLL_MS);
 
 bot.command('getnumber', async (ctx) => {
   await registerUser(ctx.from.id);
@@ -1647,7 +1736,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
   const cleanRange = state.rangeEnabled ? String(range || 'auto').trim() || 'auto' : 'auto';
 
   try {
-    const res = await requestGetNumberFromPanel(cleanService, cleanRange);
+    const res = await requestGetNumberFromIms(cleanService, cleanRange);
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
@@ -1683,7 +1772,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
       ctx,
-      `🟧 *PANEL ERROR BOARD*\n🟦 *প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে*`,
+      `🟧 *PANEL ERROR BOARD*\n🟦 *IMS প্যানেল থেকে নম্বর আনতে সমস্যা হয়েছে*`,
       {
         inline_keyboard: [
           [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
@@ -1809,7 +1898,7 @@ bot.action('adm_set_baseurl', async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🌐 *SET PANEL BASE URL*\n🟦 *নতুন Base URL পাঠান (যেমন: \`https://example-panel.com\`)*`,
+    `🌐 *SET IMS PANEL URL*\n🟦 *IMS REST Base URL পাঠান (যেমন: \`https://imssms.org/api/v1/rest\`)*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
   );
@@ -1821,15 +1910,12 @@ bot.action('adm_set_apikey', async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🔑 *SET PANEL API KEY*\n🟦 *নতুন API Key পাঠান*`,
+    `🔑 *SET IMS API TOKEN*\n🟦 *IMS প্যানেলের API Token পাঠান*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
   );
 });
 
-// =========================================================================
-// ৩. ধাপে ধাপে ADD NUMBER (সার্ভিস -> দেশ -> নম্বর বা নম্বর ফাইল)
-// =========================================================================
 bot.action('adm_add_number', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, { step: 'add_num_service' });
@@ -1898,8 +1984,9 @@ bot.hears(/^(?:🟢 API: ON|🔴 API: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) =>
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.apiEnabled = !state.apiEnabled;
   state.cachedRanges = null;
+  state.cachedNumbers = null;
   await dbPut('config/apiUrlEnabled', state.apiEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ API চালু হয়েছে।' : '⛔ API বন্ধ হয়েছে।');
+  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ IMS API চালু হয়েছে।' : '⛔ IMS API বন্ধ হয়েছে।');
 });
 
 bot.hears(/^🔢 Range: (?:ON|OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1986,8 +2073,8 @@ bot.hears(/^👥 Stats(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 bot.hears(/^🧪 Balance API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const data = await fetchPanelBalanceRaw();
-  const preview = JSON.stringify(data || { error: 'No response' }, null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `🧪 *GET /balance BOARD*\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
+  const preview = JSON.stringify(data || { error: 'IMS API response unavailable' }, null, 2).slice(0, 1000);
+  await sendCleanBoard(ctx, `🧪 *IMS STATUS BOARD*\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -1995,19 +2082,39 @@ bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.cachedRanges = null;
   const list = await fetchActiveRanges();
   const preview = JSON.stringify(list.slice(0, 5), null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `📡 *GET /active-rangre (${list.length}) BOARD*\n🟪 \`${preview}\``, getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, `📡 *GET /ranges (${list.length}) BOARD*\n🟪 \`${preview}\``, getAdminPanelAsMainKeyboard());
+});
+
+bot.hears(/^📊 Num Status(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  const st = await getPanelAndPoolNumberUsageStats();
+
+  const imsSection = st.imsError
+    ? `🟨 *IMS Panel Numbers:* *${st.imsError}*`
+    : `🟦 *IMS Panel Numbers:*\n` +
+      `  • মোট নম্বর: *${st.imsTotal}*\n` +
+      `  • ব্যবহার হয়েছে: *${st.imsUsed}*\n` +
+      `  • ব্যবহার হয়নি: *${st.imsUnused}*`;
+
+  const customSection =
+    `🟩 *Custom Pool Numbers:*\n` +
+    `  • মোট নম্বর: *${st.customTotal}*\n` +
+    `  • ব্যবহার হয়েছে: *${st.customUsed}*\n` +
+    `  • ব্যবহার হয়নি: *${st.customUnused}*`;
+
+  const text = `📊 *NUMBER USAGE STATUS*\n\n${imsSection}\n\n${customSection}`;
+  await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^🔗 Endpoints(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const urls = getPanelUrls();
+  const ep = getImsEndpoints();
   const text =
-    `🔗 *API ENDPOINTS*\n\n` +
-    `• Get Number: ${urls.getNumber}\n` +
-    `• Get OTP: ${urls.getOtp}\n` +
-    `• Active Range: ${urls.activeRange}\n` +
-    `• Cancel Number: ${urls.cancelNumber}\n` +
-    `• Balance: ${urls.balance}`;
+    `🔗 *IMS API ENDPOINTS*\n\n` +
+    `• Ranges: ${ep.ranges || 'Not Set'}\n` +
+    `• Numbers: ${ep.numbers || 'Not Set'}\n` +
+    `• CDRs: ${ep.cdrs || 'Not Set'}\n` +
+    `• Messages: ${ep.messages || 'Not Set'}`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
@@ -2020,22 +2127,6 @@ bot.hears(/^🛡️ Info(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
     `• Email: mnshiddik11@gmail.com`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
-
-function parseNumbersFromInput(rawText) {
-  const chunks = String(rawText || '')
-    .split(/[\n,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const phones = [];
-  for (const chunk of chunks) {
-    const p = normalizePhone(chunk);
-    if (p && !phones.includes(p)) {
-      phones.push(p);
-    }
-  }
-  return phones;
-}
 
 async function commitAddedNumbers(ctx, wiz) {
   const srv = String(wiz.service || 'Telegram').trim() || 'Telegram';
@@ -2137,17 +2228,19 @@ bot.on('text', async (ctx) => {
       }
       state.baseUrl = cleanedUrl;
       state.cachedRanges = null;
+      state.cachedNumbers = null;
       hitSnapshotsByKey.clear();
       await dbPut('config/baseUrl', cleanedUrl);
-      return showAdminBoardInReplyMenu(ctx, `✅ নতুন Base URL সেট হয়েছে: ${cleanedUrl}`);
+      return showAdminBoardInReplyMenu(ctx, `✅ নতুন IMS Base URL সেট হয়েছে: ${cleanedUrl}`);
     }
 
     if (mode === 'key') {
       state.adminWizard.delete(uid);
       state.apiKey = txt;
       state.cachedRanges = null;
+      state.cachedNumbers = null;
       await dbPut('config/apiKey', txt);
-      return showAdminBoardInReplyMenu(ctx, '✅ নতুন API Token সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, '✅ নতুন IMS API Token সেট হয়েছে।');
     }
 
     if (mode === 'add_num_service') {
@@ -2323,7 +2416,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('Bot running with separate GET NUMBER flow, notification number handler, and 3-step Add Number wizard...');
+  console.log('IMS REST Bot running with ranges/numbers/messages support, 20-min hit updates, Num Status, and exhaustion guard...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
