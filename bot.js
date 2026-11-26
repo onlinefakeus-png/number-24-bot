@@ -198,7 +198,13 @@ const hitSnapshotsByKey = new Map();
 let lastImsCallTs = 0;
 
 function getImsBaseUrl() {
-  const cleaned = String(state.baseUrl || IMS_DEFAULT_URL || '').trim().replace(/\/+$/, '');
+  let cleaned = String(state.baseUrl || IMS_DEFAULT_URL || '')
+    .trim()
+    .replace(/\/+$/, '');
+
+  // যদি URL-এর শেষে /messages, /numbers, /ranges বা /cdrs থাকে, তবে আসল Base URL বের করে নেবে
+  cleaned = cleaned.replace(/\/(messages|numbers|ranges|cdrs)$/i, '').replace(/\/+$/, '');
+
   return /^https?:\/\//i.test(cleaned) ? cleaned : '';
 }
 
@@ -218,8 +224,8 @@ function isImsReady() {
 }
 
 function getImsEndpoints() {
-  const b = getImsBaseUrl();
-  if (!b) {
+  const root = getImsBaseUrl();
+  if (!root) {
     return {
       base: '',
       ranges: '',
@@ -229,11 +235,11 @@ function getImsEndpoints() {
     };
   }
   return {
-    base: b,
-    ranges: `${b}/ranges`,
-    numbers: `${b}/numbers`,
-    cdrs: `${b}/cdrs`,
-    messages: `${b}/messages`
+    base: root,
+    ranges: `${root}/ranges`,
+    numbers: `${root}/numbers`,
+    cdrs: `${root}/cdrs`,
+    messages: `${root}/messages`
   };
 }
 
@@ -2585,7 +2591,7 @@ bot.on('text', async (ctx) => {
       state.cachedNumbers = null;
       hitSnapshotsByKey.clear();
       await dbPut('config/baseUrl', cleanedUrl);
-      return showAdminBoardInReplyMenu(ctx, `✅ নতুন IMS Base URL সেট হয়েছে: ${cleanedUrl}`);
+      return showAdminBoardInReplyMenu(ctx, `✅ নতুন IMS Base URL সেট হয়েছে: ${getImsBaseUrl()}`);
     }
 
     if (mode === 'key') {
