@@ -888,7 +888,6 @@ async function fetchPanelRawNumberRecords() {
 }
 
 function groupFetchedPanelNumbersByCountry(records = []) {
-  const usedPhones = getAlreadyUsedPhoneDigitsSet();
   const existingPhones = new Set(
     (state.customNumbers || [])
       .map((x) => String(x?.phone || '').replace(/[^\d]/g, ''))
@@ -901,7 +900,8 @@ function groupFetchedPanelNumbersByCountry(records = []) {
     const phone = normalizePhone(row?.number || row?.phone || '');
     if (!phone) continue;
     const digits = phone.replace(/[^\d]/g, '');
-    if (usedPhones.has(digits) || existingPhones.has(digits)) continue;
+
+    if (existingPhones.has(digits)) continue;
 
     const rangeName = String(row?.range || row?.rangeId || '').trim();
     const prefixVal = String(row?.rangePrefix || '').replace(/[^\d]/g, '');
@@ -938,7 +938,6 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
     return showAdminBoardInReplyMenu(ctx, '⚠️ এই দেশের কোনো পেন্ডিং নম্বর পাওয়া যায়নি বা আগেই লোড হয়েছে।');
   }
 
-  const usedPhones = getAlreadyUsedPhoneDigitsSet();
   const existingPhones = new Set(
     (state.customNumbers || [])
       .map((x) => String(x?.phone || '').replace(/[^\d]/g, ''))
@@ -950,7 +949,7 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
     const finalPhone = applyCountryDialIfMissing(rawPhone, bucket.countryName);
     if (!finalPhone) continue;
     const digits = finalPhone.replace(/[^\d]/g, '');
-    if (usedPhones.has(digits) || existingPhones.has(digits)) continue;
+    if (existingPhones.has(digits)) continue;
     existingPhones.add(digits);
 
     const cInfo = resolveCountryInfo(bucket.countryName || finalPhone, finalPhone);
@@ -974,7 +973,7 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
     return showAdminBoardInReplyMenu(ctx, `⚠️ ${bucket.countryLabel} এর নম্বরগুলো আগে থেকেই যুক্ত আছে।`);
   }
 
-  state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 500);
+  state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 1000);
   await dbPut('customNumbers/list', state.customNumbers);
 
   await sendNewNumberNotificationToUsers({
@@ -2495,7 +2494,7 @@ async function commitAddedNumbers(ctx, wiz) {
     return showAdminBoardInReplyMenu(ctx, '⚠️ কোনো বৈধ নম্বর সেট করা যায়নি।');
   }
 
-  state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 500);
+  state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 1000);
   await dbPut('customNumbers/list', state.customNumbers);
 
   const firstCountry = addedEntries[0]?.countryLabel || resolveCountryInfo(rawCountry).label;
