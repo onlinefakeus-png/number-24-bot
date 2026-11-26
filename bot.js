@@ -423,21 +423,6 @@ function applyCountryDialIfMissing(rawPhone, countryInput = '') {
   return digits.length >= 7 && digits.length <= 15 ? `+${digits}` : null;
 }
 
-function getAlreadyUsedPhoneDigitsSet() {
-  const used = new Set();
-  for (const item of state.customNumbers || []) {
-    if (item?.used && item?.phone) {
-      used.add(String(item.phone).replace(/[^\d]/g, ''));
-    }
-  }
-  for (const h of state.numberHistory || []) {
-    if (h?.phone) {
-      used.add(String(h.phone).replace(/[^\d]/g, ''));
-    }
-  }
-  return used;
-}
-
 function maskPhoneForPublicChannel(rawPhone) {
   const digits = String(rawPhone || '').replace(/[^\d]/g, '');
   if (!digits) return 'ARF';
@@ -851,6 +836,7 @@ async function fetchPanelRawNumberRecords() {
   const ep = getImsEndpoints();
   const allRecords = [];
   let afterCursor = '';
+  const seenCursors = new Set();
   let pageCount = 0;
 
   try {
@@ -861,29 +847,54 @@ async function fetchPanelRawNumberRecords() {
 
       const res = await callImsPanel(ep.numbers, params, 20000);
       const data = res?.data || {};
-      const pageRecords = Array.isArray(data?.records)
+
+      const rawList = Array.isArray(data?.records)
         ? data.records
         : Array.isArray(data?.data)
         ? data.data
+        : Array.isArray(data?.numbers)
+        ? data.numbers
+        : Array.isArray(data)
+        ? data
         : [];
 
-      for (const rec of pageRecords) {
-        if (rec && (rec.number || rec.phone)) {
-          allRecords.push(rec);
+      for (const rec of rawList) {
+        if (!rec) continue;
+        if (typeof rec === 'string' || typeof rec === 'number') {
+          allRecords.push({ number: String(rec) });
+          continue;
+        }
+        const candidatePhone =
+          rec.number ||
+          rec.phone ||
+          rec.phoneNumber ||
+          rec.phone_number ||
+          rec.msisdn ||
+          rec.did ||
+          '';
+        if (candidatePhone) {
+          allRecords.push({ ...rec, number: String(candidatePhone) });
         }
       }
 
-      const nextCur = data?.nextCursor;
-      if (!nextCur || String(nextCur) === String(afterCursor) || !pageRecords.length) {
+      const nextCur = data?.nextCursor ?? data?.next_cursor ?? data?.cursor ?? '';
+      if (!nextCur || !rawList.length || seenCursors.has(String(nextCur))) {
         break;
       }
+      seenCursors.add(String(nextCur));
       afterCursor = String(nextCur);
     }
 
+    console.log(`[SYNC PANEL] Fetched raw records: ${allRecords.length}`);
     return { records: allRecords, error: '' };
   } catch (err) {
-    const errCode = err?.response?.data?.error || err?.response?.status || err.message;
-    return { records: [], error: String(errCode) };
+    const errDetail =
+      err?.response?.data?.message ||
+      err?.response?.data?.error ||
+      err?.response?.status ||
+      err.message;
+    console.error('[SYNC PANEL ERR]:', errDetail);
+    return { records: allRecords, error: String(errDetail) };
   }
 }
 
