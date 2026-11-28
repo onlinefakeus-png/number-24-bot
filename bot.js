@@ -653,7 +653,6 @@ function getMainKeyboard(isAdmin) {
 }
 
 function getAdminPanelAsMainKeyboard() {
-  const activeTag = getActiveSyncPanelId() === 'panel2' ? 'P2' : 'P1';
   return {
     keyboard: [
       [
@@ -669,8 +668,8 @@ function getAdminPanelAsMainKeyboard() {
         { text: state.joinCheckEnabled ? '🔒 Gate: ON ⋮⋮⋮⋮' : '🔓 Gate: OFF ⋮⋮⋮⋮', style: state.joinCheckEnabled ? 'success' : 'danger' }
       ],
       [
-        { text: `⚙️ Panel & Add Num (${activeTag}) ⋮⋮⋮⋮`, style: 'success' },
-        { text: '👤 Owner ⋮⋮⋮⋮', style: 'primary' }
+        { text: '⚙️ Panel 1 ⋮⋮⋮⋮', style: 'success' },
+        { text: '⚙️ Panel 2 ⋮⋮⋮⋮', style: 'primary' }
       ],
       [
         { text: '📢 Main Group ⋮⋮⋮⋮', style: 'primary' },
@@ -693,7 +692,10 @@ function getAdminPanelAsMainKeyboard() {
         { text: '🔗 Endpoints ⋮⋮⋮⋮', style: 'primary' }
       ],
       [
-        { text: '🛡️ Info ⋮⋮⋮⋮', style: 'primary' },
+        { text: '👤 Owner ⋮⋮⋮⋮', style: 'primary' },
+        { text: '🛡️ Info ⋮⋮⋮⋮', style: 'primary' }
+      ],
+      [
         { text: '⬅️ Main Menu ⋮⋮⋮⋮', style: 'danger' }
       ]
     ],
@@ -821,7 +823,7 @@ async function sendJoinGateBoard(ctx, missingMain = true, missingOtp = true, pre
 
   const text =
     `🟪 *JOIN VERIFICATION BOARD*\n` +
-    `🟦 *GET NUMBER চালু করতে ২টি গ্রুপে জয়েন করে Verify করুন*\n` +
+    `🟦 *Join both groups and tap Verify to use GET NUMBER*\n` +
     `🟩 ${missingMain ? '❌ Main Group' : '✅ Main Group'}  |  ${missingOtp ? '❌ OTP Group' : '✅ OTP Group'}`;
 
   return sendCleanBoard(ctx, text, { inline_keyboard: rows }, preferEdit);
@@ -882,7 +884,7 @@ async function fetchPanelBalanceRaw(panelId = getActiveSyncPanelId()) {
       if (d !== undefined && d !== null) {
         const count = Number(d?.count ?? (Array.isArray(d?.records) ? d.records.length : Array.isArray(d?.data) ? d.data.length : 0));
         return {
-          panel: pid === 'panel2' ? 'Universal Panel 2' : 'IMS Panel 1',
+          panel: pid === 'panel2' ? 'Panel 2 (Universal)' : 'Panel 1 (IMS)',
           status: 'connected',
           recentMessagesChecked: count,
           balance: d?.balance ?? d?.data?.balance ?? null
@@ -918,7 +920,7 @@ function extractRecordsFromUniversalPayload(rawData) {
 async function fetchPanelRawNumberRecords(panelId = getActiveSyncPanelId()) {
   const pid = normalizePanelId(panelId);
   if (!isPanelConfigured(pid)) {
-    return { records: [], error: `${pid === 'panel2' ? 'Panel 2' : 'Panel 1'} API URL বা Token সেট করা নেই` };
+    return { records: [], error: `${pid === 'panel2' ? 'Panel 2' : 'Panel 1'} API URL or API Key is not configured` };
   }
 
   const ep = getPanelEndpoints(pid);
@@ -1052,7 +1054,7 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
   const bucket = syncCache?.get(countryKey);
 
   if (!bucket || !Array.isArray(bucket.phones) || !bucket.phones.length) {
-    return showAdminBoardInReplyMenu(ctx, '⚠️ এই দেশের কোনো পেন্ডিং নম্বর পাওয়া যায়নি বা আগেই লোড হয়েছে।');
+    return showAdminBoardInReplyMenu(ctx, 'No pending numbers found for this country or already synced.');
   }
 
   const pid = normalizePanelId(bucket.panelId || getActiveSyncPanelId());
@@ -1089,7 +1091,7 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
   syncCache.delete(countryKey);
 
   if (!addedEntries.length) {
-    return showAdminBoardInReplyMenu(ctx, `⚠️ ${bucket.countryLabel} এর নম্বরগুলো আগে থেকেই যুক্ত আছে।`);
+    return showAdminBoardInReplyMenu(ctx, `All numbers for ${bucket.countryLabel} are already in the pool.`);
   }
 
   state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 1000);
@@ -1098,12 +1100,15 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
   await sendNewNumberNotificationToUsers({
     service: srv,
     countryLabel: bucket.countryLabel,
+    countryName: bucket.countryName,
+    flag: bucket.flag,
+    range: addedEntries[0]?.range || 'auto',
     count: addedEntries.length
   });
 
   return showAdminBoardInReplyMenu(
     ctx,
-    `✅ ${addedEntries.length} টি নম্বর যুক্ত হয়েছে (${bucket.countryLabel} • ${srv})`
+    `Added ${addedEntries.length} numbers (${bucket.countryLabel} • ${srv} • ${pid.toUpperCase()})`
   );
 }
 
@@ -1191,7 +1196,7 @@ async function requestGetNumberFromIms(service = 'Telegram', range = '') {
     return buildSessionPayloadFromEntries(hits, cleanService);
   }
 
-  return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
+  return { error: 'All numbers in pool are used. Add or sync new numbers first.' };
 }
 
 async function requestNotificationNumber(service = 'Telegram', range = 'auto', country = '') {
@@ -1205,7 +1210,7 @@ async function requestNotificationNumber(service = 'Telegram', range = 'auto', c
     return buildSessionPayloadFromEntries(hits, cleanService);
   }
 
-  return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
+  return { error: 'All numbers in pool are used. Add or sync new numbers first.' };
 }
 
 async function handleNotificationNumberAction(ctx, service, range, country = '') {
@@ -1218,7 +1223,7 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
-        `🟧 *NOTIFICATION NUMBER*\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর নম্বর পাওয়া যায়নি\n${res?.error ? `🟨 *কারণ:* \`${res.error}\`` : ''}`,
+        `🟧 *NOTIFICATION NUMBER*\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}numbers unavailable\n${res?.error ? `🟨 *Reason:* \`${res.error}\`` : ''}`,
         null,
         false
       );
@@ -1247,7 +1252,7 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
     console.error('[NOTIF-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
       ctx,
-      `🟧 *NOTIFICATION NUMBER ERROR*\n🟦 *নোটিফিকেশন নম্বর আনতে সমস্যা হয়েছে*`,
+      `🟧 *NOTIFICATION NUMBER ERROR*\n🟦 *Failed to fetch notification numbers*`,
       null,
       false
     );
@@ -1387,7 +1392,7 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
   if (!otpGroupTarget) {
     return {
       ok: false,
-      reason: 'OTP Group/Channel ID বা Username সেট করা নেই (প্রাইভেট লিংক দিলে সাথে -100... Chat ID দিন)।'
+      reason: 'OTP Group/Channel ID or Username is not set (provide -100... Chat ID for private links).'
     };
   }
 
@@ -1439,18 +1444,37 @@ async function deliverOtpToUserAndGroup(uid, item, rawOtp, options = {}) {
 async function sendNewNumberNotificationToUsers(summary) {
   if (!state.newNumberNotify || !Array.isArray(state.users) || !state.users.length) return;
 
+  const cInfo = resolveCountryInfo(summary.countryName || summary.countryLabel || '');
+  const flag = summary.flag || cInfo.flag || '🌍';
+  const countryName = summary.countryName || cInfo.name || summary.countryLabel || 'Global';
+  const serviceName = summary.service || 'WhatsApp';
+  const qty = Number(summary.count || 0);
+  const rangeVal = summary.range || 'auto';
+
   const text =
-    `🟧 *নতুন নম্বর যুক্ত হয়েছে*\n` +
-    `🟦 *সার্ভিস:* *${summary.service}*\n` +
-    `🟩 *দেশ:* *${summary.countryLabel}*\n` +
-    `🟨 *যুক্ত হয়েছে:* *${summary.count} টি নম্বর*`;
+    `⚡ *New Stock Added!*\n` +
+    `• ${flag} *${countryName}* 🟢 *${serviceName}*\n` +
+    `📦 *Quantity:* *${qty}*\n` +
+    `🚀 _Grab now before stock runs out!_`;
+
+  const markup = {
+    inline_keyboard: [
+      [
+        {
+          text: `${flag} ${countryName} — ${serviceName} ↗`,
+          callback_data: `notif_num_${encodeURIComponent(serviceName)}__${encodeURIComponent(rangeVal)}__${encodeURIComponent(countryName)}`,
+          style: 'primary'
+        }
+      ]
+    ]
+  };
 
   const uniqueUsers = [...new Set(state.users.map((id) => String(id).trim()).filter(Boolean))];
   const blockedOrDeadIds = new Set();
 
   for (const uid of uniqueUsers) {
     try {
-      await rawSendMessage(uid, text, getMainKeyboard(ADMIN_IDS.includes(Number(uid))));
+      await rawSendMessage(uid, text, markup);
     } catch (e) {
       const msg = String(e?.message || '');
       if (
@@ -1549,20 +1573,15 @@ async function collectLast10MinHitUpdates() {
 async function sendTwentyMinNotificationToUsers(item) {
   if (!state.newNumberNotify || !Array.isArray(state.users) || !state.users.length) return;
 
-  const text =
-    `🔔 *20-MIN HIT UPDATE*\n` +
-    `🟦 *Service:* *${item.service}*\n` +
-    `🟩 *Country:* *${item.countryLabel}*\n` +
-    (item.range && item.range !== 'auto' ? `🔢 *Range:* \`${item.range}\`\n` : '') +
-    `🔥 *Last 10 Min Hits:* *+${item.gainedLast10Min}* (Now: *${item.hitsNow}*)`;
+  const text = `${item.countryName} ${item.flag} 💬 *High Access* 🔥`;
 
   const markup = {
     inline_keyboard: [
       [
         {
-          text: `📞 নম্বর নিন (${item.service})`,
+          text: `${item.flag} ${item.countryName} — ${item.service} ↗`,
           callback_data: `notif_num_${encodeURIComponent(item.service)}__${encodeURIComponent(item.range || 'auto')}__${encodeURIComponent(item.countryName || '')}`,
-          style: 'success'
+          style: 'primary'
         }
       ]
     ]
@@ -1622,24 +1641,20 @@ function formatDisplayedPhoneNumber(rawPhone, dial, stripCC) {
 function buildNumberCard(sess) {
   const items = Array.isArray(sess.items) && sess.items.length ? sess.items : [sess.item];
   const primary = items[0];
-  const serviceName = primary.service || 'Telegram';
+  const serviceName = primary.service || 'WhatsApp';
 
-  const numberLines = items.map((entry, idx) => {
-    const shown = formatDisplayedPhoneNumber(entry.phone, entry.dial, sess.stripCC);
-    const otpSuffix = entry.otp ? `  ✅ \`${formatDashedOtp(entry.otp)}\`` : '';
-    return `${idx + 1}. ${entry.flag} \`${shown}\`${otpSuffix}`;
-  });
+  const receivedOtps = items
+    .map((entry, idx) =>
+      entry.otp ? `✅ *#${idx + 1} (\`${formatDisplayedPhoneNumber(entry.phone, entry.dial, sess.stripCC)}\`):* \`${formatDashedOtp(entry.otp)}\`` : null
+    )
+    .filter(Boolean);
 
-  const anyOtp = items.find((x) => x.otp);
-  const statusLine = anyOtp
-    ? `✅ *OTP Received!*`
-    : `⏳ *Waiting for OTP....*`;
+  const statusLine = receivedOtps.length
+    ? receivedOtps.join('\n')
+    : `⏳ *Waiting for OTP....* 🔥`;
 
   const text =
-    `${primary.flag} 🟢 *${serviceName} ${primary.countryName} (${items.length}টি নম্বর):*\n` +
-    `🌍 Country: *${primary.countryName}*\n` +
-    (primary.range && primary.range !== 'auto' ? `🔢 Range: \`${primary.range}\`\n` : '') +
-    `${numberLines.join('\n')}\n` +
+    `${primary.flag} 💬 *${serviceName} Number Assigned:*\n` +
     `${statusLine}`;
 
   const rows = [];
@@ -1803,19 +1818,19 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
   const apiStatusText = statusData?.status === 'connected'
     ? `Connected (${statusData.panel})`
-    : 'Not Connected / Check URL & Token';
+    : 'Not Connected / Check URL & Key';
 
   const text =
     (statusNote ? `🟨 *STATUS BOARD*\n🟩 *${statusNote}*\n\n` : '') +
-    `🟦 *IMS ADMIN CONTROL BOARD*\n` +
+    `🟦 *ADMIN CONTROL BOARD*\n` +
     `🟩 *Users:* *${state.users.length}* | *Numbers:* *${totalNums}* | *OTPs:* *${totalOtps}*\n` +
     `🟪 *Status:* *${apiStatusText}* | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
-    `🟦 *Active Sync:* *${activePid === 'panel2' ? 'Panel 2 (Universal)' : 'Panel 1 (IMS)'}*\n` +
+    `🟦 *Active Panel:* *${activePid === 'panel2' ? 'Panel 2 (Universal)' : 'Panel 1 (IMS)'}*\n` +
     `🟦 *Panel 1 URL:* \`${getPanelBaseUrl('panel1') || 'Not Set'}\`\n` +
-    `🟨 *Panel 1 Token:* \`${maskImsToken(getPanelApiToken('panel1'))}\`\n` +
-    `🟪 *Panel 2 URL:* \`${getPanelBaseUrl('panel2') || 'Not Set'}\` (${p2Ready ? 'Ready' : 'Off'})\n` +
-    `🟨 *Panel 2 Token:* \`${maskImsToken(getPanelApiToken('panel2'))}\`\n` +
-    `🟩 *Number Pool:* *${unusedCustom} টি রেডি নম্বর*\n` +
+    `🟨 *Panel 1 Key:* \`${maskImsToken(getPanelApiToken('panel1'))}\`\n` +
+    `🟪 *Panel 2 URL:* \`${getPanelBaseUrl('panel2') || 'Not Set'}\` (${p2Ready ? 'Ready' : 'Not Set'})\n` +
+    `🟨 *Panel 2 Key:* \`${maskImsToken(getPanelApiToken('panel2'))}\`\n` +
+    `🟩 *Number Pool:* *${unusedCustom} Ready Numbers*\n` +
     `🟦 *Main:* \`${state.mainGroupLink}\` (\`${state.mainGroupId || 'No ID'}\`)\n` +
     `🟩 *OTP:* \`${state.otpGroupLink}\` (\`${state.otpGroupId || 'No ID'}\`)\n` +
     `🟪 *Range:* \`${state.rangeGroupLink}\` (\`${state.rangeGroupId || 'No ID'}\`)\n` +
@@ -1829,51 +1844,62 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   return sent;
 }
 
-async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
-  const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
-  const totalCustom = (state.customNumbers || []).length;
-  const activePid = getActiveSyncPanelId();
-  const activeLabel = activePid === 'panel2' ? 'Panel 2 (Universal)' : 'Panel 1 (IMS)';
+async function openSinglePanelManagerBoard(ctx, targetPanelId = 'panel1', preferEdit = false) {
+  const pid = normalizePanelId(targetPanelId);
+  state.activeSyncPanel = pid;
+  await dbPut('config/activeSyncPanel', pid);
+
+  const panelPool = (state.customNumbers || []).filter(
+    (x) => normalizePanelId(x?.panelId || 'panel1') === pid
+  );
+  const unusedPanel = panelPool.filter((x) => !x.used).length;
+  const totalPanel = panelPool.length;
+  const title = pid === 'panel2' ? 'PANEL 2 (UNIVERSAL ADAPTER)' : 'PANEL 1 (IMS PANEL)';
 
   const text =
-    `⚙️ *DUAL PANEL & NUMBER MANAGER*\n` +
-    `🟩 *Active Sync Panel:* *${activeLabel}*\n` +
-    `🟦 *Panel 1 URL:* \`${getPanelBaseUrl('panel1') || 'Not Set'}\`\n` +
-    `🟨 *Panel 1 Token:* \`${maskImsToken(getPanelApiToken('panel1'))}\`\n` +
-    `🟪 *Panel 2 URL:* \`${getPanelBaseUrl('panel2') || 'Not Set'}\`\n` +
-    `🟨 *Panel 2 Token:* \`${maskImsToken(getPanelApiToken('panel2'))}\`\n` +
-    `🟩 *Number Pool:* *${unusedCustom} রেডি / ${totalCustom} মোট*\n\n` +
-    `➕ *Add Number* দিয়ে ফাইল/নম্বর দিন, 🔄 *Sync Panel Num* দিয়ে সিলেক্টেড প্যানেলের নম্বর লোড করুন অথবা 🗑️ *Delete Numbers* দিয়ে মুছুন।`;
+    `⚙️ *${title}*\n` +
+    `🟦 *API URL:* \`${getPanelBaseUrl(pid) || 'Not Set'}\`\n` +
+    `🟨 *API Key:* \`${maskImsToken(getPanelApiToken(pid))}\`\n` +
+    `🟩 *${pid === 'panel2' ? 'Panel 2' : 'Panel 1'} Numbers:* *${unusedPanel} Ready / ${totalPanel} Total*\n\n` +
+    `Configure *API URL* & *API Key*, use *Add Number* or *Sync Numbers*, or *Delete Numbers* for this panel.`;
 
   const markup = {
     inline_keyboard: [
       [
         {
-          text: activePid === 'panel1' ? '✅ Active: Panel 1' : '🔄 Switch to Panel 1',
-          callback_data: 'adm_switch_p1',
-          style: activePid === 'panel1' ? 'success' : 'primary'
+          text: '🌐 API URL',
+          callback_data: pid === 'panel2' ? 'adm_set_p2_url' : 'adm_set_baseurl',
+          style: 'primary'
         },
         {
-          text: activePid === 'panel2' ? '✅ Active: Panel 2' : '🔄 Switch to Panel 2',
-          callback_data: 'adm_switch_p2',
-          style: activePid === 'panel2' ? 'success' : 'primary'
+          text: '🔑 API Key',
+          callback_data: pid === 'panel2' ? 'adm_set_p2_key' : 'adm_set_apikey',
+          style: 'primary'
         }
       ],
       [
-        { text: '🌐 P1 URL', callback_data: 'adm_set_baseurl', style: 'primary' },
-        { text: '🔑 P1 Token', callback_data: 'adm_set_apikey', style: 'primary' }
+        {
+          text: '➕ Add Number',
+          callback_data: `adm_add_number_${pid}`,
+          style: 'success'
+        },
+        {
+          text: '🔄 Sync Numbers',
+          callback_data: `adm_sync_panel_${pid}`,
+          style: 'primary'
+        }
       ],
       [
-        { text: '🌍 P2 URL (Any)', callback_data: 'adm_set_p2_url', style: 'primary' },
-        { text: '🗝️ P2 Key (Any)', callback_data: 'adm_set_p2_key', style: 'primary' }
-      ],
-      [
-        { text: '➕ Add Number', callback_data: 'adm_add_number', style: 'success' },
-        { text: '🔄 Sync Panel Num', callback_data: 'adm_sync_panel_menu', style: 'primary' }
-      ],
-      [
-        { text: '🗑️ Delete Numbers', callback_data: 'adm_del_menu', style: 'danger' },
-        { text: '⬅️ Back to Admin', callback_data: 'adm_back_board', style: 'danger' }
+        {
+          text: '🗑️ Delete Numbers',
+          callback_data: `adm_del_menu_${pid}`,
+          style: 'danger'
+        },
+        {
+          text: '⬅️ Back to Admin',
+          callback_data: 'adm_back_board',
+          style: 'danger'
+        }
       ]
     ]
   };
@@ -1881,10 +1907,14 @@ async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
   return sendCleanBoard(ctx, text, markup, preferEdit);
 }
 
-function groupCustomNumbersByServiceAndCountry() {
+function groupCustomNumbersByServiceAndCountry(filterPanelId = null) {
   const grouped = new Map();
   for (const item of state.customNumbers || []) {
     if (!item || !item.phone) continue;
+    if (filterPanelId && normalizePanelId(item.panelId || 'panel1') !== normalizePanelId(filterPanelId)) {
+      continue;
+    }
+
     const srv = String(item.service || 'Telegram').trim() || 'Telegram';
     const cInfo = resolveCountryInfo(item.countryName || item.phone, item.phone);
     const cKey = cInfo.key || 'global';
@@ -1918,14 +1948,15 @@ function groupCustomNumbersByServiceAndCountry() {
   return grouped;
 }
 
-async function openDeleteNumbersMenu(ctx, preferEdit = true) {
-  const grouped = groupCustomNumbersByServiceAndCountry();
+async function openDeleteNumbersMenu(ctx, panelId = 'panel1', preferEdit = true) {
+  const pid = normalizePanelId(panelId);
+  const grouped = groupCustomNumbersByServiceAndCountry(pid);
   if (!grouped.size) {
     return sendCleanBoard(
       ctx,
-      `🗑️ *DELETE CUSTOM NUMBERS*\n🟩 *ডিলিট করার মতো কোনো অ্যাড করা নম্বর নেই।*`,
+      `🗑️ *DELETE NUMBERS (${pid.toUpperCase()})*\n🟩 *No numbers available to delete for this panel.*`,
       {
-        inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]]
+        inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]]
       },
       preferEdit
     );
@@ -1935,12 +1966,12 @@ async function openDeleteNumbersMenu(ctx, preferEdit = true) {
   const rows = [];
 
   for (const [srv, srvObj] of grouped.entries()) {
-    summaryLines.push(`🟦 *${srv}:* *${srvObj.total} টি* (*${srvObj.unused} রেডি*)`);
+    summaryLines.push(`🟦 *${srv}:* *${srvObj.total}* (*${srvObj.unused} Ready*)`);
 
     rows.push([
       {
         text: `🗑️ All ${srv} (${srvObj.total})`,
-        callback_data: `adm_del_srv_${encodeURIComponent(srv)}`,
+        callback_data: `adm_del_srv_${pid}__${encodeURIComponent(srv)}`,
         style: 'danger'
       }
     ]);
@@ -1951,7 +1982,7 @@ async function openDeleteNumbersMenu(ctx, preferEdit = true) {
       const row = [
         {
           text: `🗑️ ${srv} • ${c1.countryLabel} (${c1.total})`,
-          callback_data: `adm_del_sc_${encodeURIComponent(srv)}__${encodeURIComponent(c1.countryKey)}`,
+          callback_data: `adm_del_sc_${pid}__${encodeURIComponent(srv)}__${encodeURIComponent(c1.countryKey)}`,
           style: 'primary'
         }
       ];
@@ -1959,7 +1990,7 @@ async function openDeleteNumbersMenu(ctx, preferEdit = true) {
         const c2 = countryArr[i + 1];
         row.push({
           text: `🗑️ ${srv} • ${c2.countryLabel} (${c2.total})`,
-          callback_data: `adm_del_sc_${encodeURIComponent(srv)}__${encodeURIComponent(c2.countryKey)}`,
+          callback_data: `adm_del_sc_${pid}__${encodeURIComponent(srv)}__${encodeURIComponent(c2.countryKey)}`,
           style: 'primary'
         });
       }
@@ -1967,11 +1998,11 @@ async function openDeleteNumbersMenu(ctx, preferEdit = true) {
     }
   }
 
-  rows.push([{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]);
+  rows.push([{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]);
 
   const text =
-    `🗑️ *DELETE CUSTOM NUMBERS*\n` +
-    `🟨 *সার্ভিস অথবা নির্দিষ্ট সার্ভিস ও দেশ বেছে নম্বর ডিলিট করুন:*\n\n` +
+    `🗑️ *DELETE NUMBERS — ${pid.toUpperCase()}*\n` +
+    `🟨 *Select a service or country to delete numbers:*\n\n` +
     summaryLines.join('\n');
 
   return sendCleanBoard(ctx, text, { inline_keyboard: rows }, preferEdit);
@@ -2047,7 +2078,7 @@ bot.start(async (ctx) => {
 
   const welcomeText =
     `🟩 *WELCOME BOARD*\n` +
-    `🟦 *স্বাগতম! নিচের মেনু থেকে অপশন বেছে নিন*`;
+    `🟦 *Welcome! Choose an option from the menu below*`;
 
   await sendCleanBoard(ctx, welcomeText, getMainKeyboard(isAdmin));
 });
@@ -2063,13 +2094,13 @@ bot.action('verify_groups', async (ctx) => {
   const otpRes = otpTarget ? await checkSingleGroupMember(otpTarget, ctx.from.id) : true;
 
   if (mainRes === false || otpRes === false) {
-    await ctx.answerCbQuery('আগে ২টি গ্রুপেই জয়েন করুন!', { show_alert: true });
+    await ctx.answerCbQuery('Join both groups first!', { show_alert: true });
     return sendJoinGateBoard(ctx, mainRes === false, otpRes === false, true);
   }
 
   state.verifiedUsers[idStr] = true;
   await dbPut(`verifiedUsers/${idStr}`, true);
-  await ctx.answerCbQuery('✅ ভেরিফাই সফল হয়েছে!');
+  await ctx.answerCbQuery('Verified successfully!');
   await openServiceMenu(ctx, true);
 });
 
@@ -2100,14 +2131,14 @@ bot.action('back_services', async (ctx) => {
 
 bot.action(/^ask_rng_(.+)$/, async (ctx) => {
   if (!state.rangeEnabled) {
-    return ctx.answerCbQuery('Range অপশন বর্তমানে বন্ধ আছে।', { show_alert: true });
+    return ctx.answerCbQuery('Range option is currently disabled.', { show_alert: true });
   }
   const service = decodeURIComponent(ctx.match[1] || 'Telegram');
   state.waitingRangeFrom.set(ctx.from.id, service);
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🟨 *CUSTOM RANGE BOARD*\n🟦 *${service} এর জন্য যে Range চান সেটি লিখে পাঠান (যেমন: \`249\` বা \`84123\`)*`,
+    `🟨 *CUSTOM RANGE BOARD*\n🟦 *Enter the Range for ${service} (e.g. \`249\` or \`84123\`)*`,
     {
       inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'cancel_rng_input', style: 'danger' }]]
     },
@@ -2117,7 +2148,7 @@ bot.action(/^ask_rng_(.+)$/, async (ctx) => {
 
 bot.action('cancel_rng_input', async (ctx) => {
   state.waitingRangeFrom.delete(ctx.from.id);
-  await ctx.answerCbQuery('বাতিল করা হয়েছে');
+  await ctx.answerCbQuery('Cancelled');
   const sess = state.userSession.get(ctx.from.id);
   if (sess?.item) {
     const card = buildNumberCard(sess);
@@ -2135,7 +2166,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     if (!res || res.error) {
       return sendCleanBoard(
         ctx,
-        `🟧 *NO NUMBER BOARD*\n🟦 *${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`) ` : ''}এর জন্য নম্বর পাওয়া যায়নি\n${res?.error ? `🟨 *কারণ:* \`${res.error}\`` : ''}`,
+        `🟧 *NO NUMBER BOARD*\n🟦 *No numbers available for ${cleanService}* ${cleanRange !== 'auto' ? `(Range: \`${cleanRange}\`)` : ''}\n${res?.error ? `🟨 *Reason:* \`${res.error}\`` : ''}`,
         {
           inline_keyboard: [
             [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }],
@@ -2168,7 +2199,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     console.error('[GET-NUMBER ERR]:', err.response?.data || err.message);
     await sendCleanBoard(
       ctx,
-      `🟧 *PANEL ERROR BOARD*\n🟦 *নম্বর আনতে সমস্যা হয়েছে*`,
+      `🟧 *PANEL ERROR BOARD*\n🟦 *Failed to assign numbers*`,
       {
         inline_keyboard: [
           [{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(cleanService)}`, style: 'primary' }]
@@ -2180,7 +2211,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
 }
 
 bot.action(/^get_num_(.+)__(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('৩টি নম্বর নেওয়া হচ্ছে...');
+  await ctx.answerCbQuery('Assigning 3 numbers...');
   await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]), true);
 });
 
@@ -2188,18 +2219,18 @@ bot.action(/^notif_num_(.+)__(.+?)__(.*)$/, async (ctx) => {
   const service = decodeURIComponent(ctx.match[1] || 'Telegram');
   const range = decodeURIComponent(ctx.match[2] || 'auto');
   const country = decodeURIComponent(ctx.match[3] || '');
-  await ctx.answerCbQuery('নোটিফিকেশন থেকে নম্বর আনা হচ্ছে...');
+  await ctx.answerCbQuery('Fetching numbers...');
   await handleNotificationNumberAction(ctx, service, range, country);
 });
 
 bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('নতুন ৩টি নম্বর আনা হচ্ছে...');
+  await ctx.answerCbQuery('Fetching new 3 numbers...');
   await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), 'auto', true);
 });
 
 bot.action('toggle_auto_chk', async (ctx) => {
   const sess = state.userSession.get(ctx.from.id);
-  if (!sess?.item) return ctx.answerCbQuery('কোনো সক্রিয় নম্বর নেই।');
+  if (!sess?.item) return ctx.answerCbQuery('No active number session.');
   sess.autoChecker = sess.autoChecker === false ? true : false;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.autoChecker ? 'Auto Checker On' : 'Auto Checker Off');
@@ -2211,7 +2242,7 @@ bot.action('toggle_auto_chk', async (ctx) => {
 
 bot.action('toggle_cc', async (ctx) => {
   const sess = state.userSession.get(ctx.from.id);
-  if (!sess?.item) return ctx.answerCbQuery('কোনো সক্রিয় নম্বর নেই।');
+  if (!sess?.item) return ctx.answerCbQuery('No active number session.');
   sess.stripCC = !sess.stripCC;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.stripCC ? 'CC Removed' : 'CC Restored');
@@ -2241,7 +2272,7 @@ bot.hears(/^🔵 TRAFFIC(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   const total = Number(state.otpStats.total || 0);
   const list = Object.values(state.otpStats.byCountry || {});
   const body = !total || !list.length
-    ? '🟩 *এখনো কোনো OTP আসেনি*'
+    ? '🟩 *No OTPs received yet*'
     : `🟨 *Total:* *${total}*\n` + list.map((x) => {
         const pct = ((Number(x.count || 0) / total) * 100).toFixed(1);
         return `🟦 ${x.label}: *${x.count}/${total}* (*${pct}%*)`;
@@ -2258,7 +2289,7 @@ bot.hears(/^🟡 NUMBER FILE(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await registerUser(ctx.from.id);
   const myHist = state.numberHistory.filter((x) => String(x.uid) === String(ctx.from.id)).slice(0, 10);
   const body = !myHist.length
-    ? '🟩 *এখনো কোনো নম্বর হিস্ট্রি নেই*'
+    ? '🟩 *No number history yet*'
     : myHist.map((h, idx) => `🟦 ${idx + 1}. *${h.service}* (${h.country || ''}) | \`${h.phone}\` (Range: \`${h.range || 'auto'}\`)`).join('\n');
 
   await sendCleanBoard(
@@ -2273,7 +2304,7 @@ bot.hears(/^🩷 SUPPORT(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.waitingSupportFrom.add(ctx.from.id);
   await sendCleanBoard(
     ctx,
-    `🟪 *SUPPORT BOARD*\n🟩 *আপনার মেসেজটি লিখে পাঠান*`,
+    `🟪 *SUPPORT BOARD*\n🟩 *Type and send your support message*`,
     { inline_keyboard: [[{ text: '👤 Owner', url: `https://t.me/${String(state.ownerContact || 'noobxvau').replace(/^@/, '')}`, style: 'primary' }]] }
   );
 });
@@ -2283,103 +2314,99 @@ bot.hears(/^💠 ADMIN PANEL(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await showAdminBoardInReplyMenu(ctx);
 });
 
-bot.hears(/^⚙️ Panel & Add Num(?:\s*\(P[12]\))?(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
+bot.hears(/^⚙️ Panel 1(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await openPanelAndNumberManagerBoard(ctx, false);
+  await openSinglePanelManagerBoard(ctx, 'panel1', false);
 });
 
-bot.action('adm_switch_p1', async (ctx) => {
+bot.hears(/^⚙️ Panel 2(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.activeSyncPanel = 'panel1';
-  state.cachedRanges = null;
-  state.cachedNumbers = null;
-  await dbPut('config/activeSyncPanel', 'panel1');
-  await ctx.answerCbQuery('Panel 1 সিলেক্ট হয়েছে');
-  await openPanelAndNumberManagerBoard(ctx, true);
+  await openSinglePanelManagerBoard(ctx, 'panel2', false);
 });
 
-bot.action('adm_switch_p2', async (ctx) => {
+bot.action(/^adm_open_(panel1|panel2)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.activeSyncPanel = 'panel2';
-  state.cachedRanges = null;
-  state.cachedNumbers = null;
-  await dbPut('config/activeSyncPanel', 'panel2');
-  await ctx.answerCbQuery('Panel 2 সিলেক্ট হয়েছে');
-  await openPanelAndNumberManagerBoard(ctx, true);
+  const pid = normalizePanelId(ctx.match[1]);
+  state.adminWizard.delete(ctx.from.id);
+  await ctx.answerCbQuery();
+  await openSinglePanelManagerBoard(ctx, pid, true);
 });
 
 bot.action('adm_set_baseurl', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, { step: 'baseurl' });
+  state.adminWizard.set(ctx.from.id, { step: 'baseurl', panelId: 'panel1' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🌐 *SET PANEL 1 (IMS) URL*\n🟦 *IMS REST Base URL পাঠান (যেমন: \`https://imssms.org/api/v1\`)*`,
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    `🌐 *SET PANEL 1 API URL*\n🟦 *Send Panel 1 Base URL (e.g. \`https://imssms.org/api/v1\`)*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_open_panel1', style: 'danger' }]] },
     true
   );
 });
 
 bot.action('adm_set_apikey', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, { step: 'key' });
+  state.adminWizard.set(ctx.from.id, { step: 'key', panelId: 'panel1' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🔑 *SET PANEL 1 (IMS) API TOKEN*\n🟦 *Panel 1-এর API Token পাঠান*`,
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    `🔑 *SET PANEL 1 API KEY*\n🟦 *Send Panel 1 API Token / Key*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_open_panel1', style: 'danger' }]] },
     true
   );
 });
 
 bot.action('adm_set_p2_url', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, { step: 'p2_url' });
+  state.adminWizard.set(ctx.from.id, { step: 'p2_url', panelId: 'panel2' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🌍 *SET UNIVERSAL PANEL 2 URL*\n🟦 *যেকোনো প্যানেলের (IMS / Volt / UMS / Other) API URL পাঠান*`,
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    `🌐 *SET PANEL 2 API URL*\n🟦 *Send Panel 2 API URL (IMS / Volt / UMS / Any)*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_open_panel2', style: 'danger' }]] },
     true
   );
 });
 
 bot.action('adm_set_p2_key', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, { step: 'p2_key' });
+  state.adminWizard.set(ctx.from.id, { step: 'p2_key', panelId: 'panel2' });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🗝️ *SET UNIVERSAL PANEL 2 API KEY*\n🟦 *Panel 2-এর API Key / Token পাঠান*`,
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    `🔑 *SET PANEL 2 API KEY*\n🟦 *Send Panel 2 API Key / Token*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_open_panel2', style: 'danger' }]] },
     true
   );
 });
 
-bot.action('adm_add_number', async (ctx) => {
+bot.action(/^adm_add_number_(panel1|panel2)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.set(ctx.from.id, { step: 'add_num_service' });
+  const pid = normalizePanelId(ctx.match[1]);
+  state.adminWizard.set(ctx.from.id, { step: 'add_num_service', panelId: pid });
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `➕ *ADD NUMBER — ধাপ ১/৩ (সার্ভিস)*\n` +
-      `🟩 *সার্ভিসের নাম লিখুন (যেমন: \`Telegram\`, \`WhatsApp\`, \`Facebook\`)*`,
-    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    `➕ *ADD NUMBER (${pid.toUpperCase()}) — STEP 1/3 (SERVICE)*\n` +
+      `🟩 *Enter service name (e.g. \`Telegram\`, \`WhatsApp\`, \`Facebook\`)*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]] },
     true
   );
 });
 
-bot.action('adm_sync_panel_menu', async (ctx) => {
+bot.action(/^adm_sync_panel_(panel1|panel2)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const activePid = getActiveSyncPanelId();
-  await ctx.answerCbQuery(`${activePid === 'panel2' ? 'Panel 2' : 'Panel 1'} চেক করা হচ্ছে...`);
+  const pid = normalizePanelId(ctx.match[1]);
+  state.activeSyncPanel = pid;
+  await dbPut('config/activeSyncPanel', pid);
+  await ctx.answerCbQuery(`Syncing ${pid.toUpperCase()}...`);
 
-  const fetched = await fetchPanelRawNumberRecords(activePid);
+  const fetched = await fetchPanelRawNumberRecords(pid);
   if (fetched.error) {
-    return showAdminBoardInReplyMenu(ctx, `⚠️ প্যানেল থেকে নম্বর আনা যায়নি। কারণ: ${fetched.error}`);
+    return showAdminBoardInReplyMenu(ctx, `Failed to fetch numbers from ${pid.toUpperCase()}: ${fetched.error}`);
   }
 
-  const grouped = groupFetchedPanelNumbersByCountry(fetched.records, activePid);
+  const grouped = groupFetchedPanelNumbersByCountry(fetched.records, pid);
   const availableCountries = [...grouped.values()].filter(
     (c) => Array.isArray(c.phones) && c.phones.length > 0
   );
@@ -2393,8 +2420,8 @@ bot.action('adm_sync_panel_menu', async (ctx) => {
   if (!availableCountries.length) {
     return sendCleanBoard(
       ctx,
-      `🔄 *SYNC PANEL NUMBERS (${activePid === 'panel2' ? 'Panel 2' : 'Panel 1'})*\n🟩 *প্যানেলে যুক্ত করার মতো কোনো নতুন অব্যবহৃত নম্বর নেই।*`,
-      { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+      `🔄 *SYNC NUMBERS (${pid.toUpperCase()})*\n🟩 *No new unused numbers found on this panel.*`,
+      { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]] },
       true
     );
   }
@@ -2419,12 +2446,12 @@ bot.action('adm_sync_panel_menu', async (ctx) => {
     }
     rows.push(row);
   }
-  rows.push([{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]);
+  rows.push([{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]);
 
   const text =
-    `🔄 *SYNC PANEL NUMBERS — ${activePid === 'panel2' ? 'Panel 2' : 'Panel 1'}*\n` +
-    `🟦 *দেশ পাওয়া গেছে:* *${availableCountries.length}টি*\n` +
-    `🟩 *যে দেশের নম্বর লোড করতে চান সেই দেশে চাপুন:*`;
+    `🔄 *SYNC NUMBERS — ${pid.toUpperCase()}*\n` +
+    `🟦 *Countries Found:* *${availableCountries.length}*\n` +
+    `🟩 *Select a country to import numbers:*`;
 
   return sendCleanBoard(ctx, text, { inline_keyboard: rows }, true);
 });
@@ -2436,13 +2463,14 @@ bot.action(/^adm_sync_c_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
 
   if (!bucket) {
-    return showAdminBoardInReplyMenu(ctx, '⚠️ সেশন শেষ হয়ে গেছে। আবার Sync Panel Num চাপুন।');
+    return showAdminBoardInReplyMenu(ctx, 'Sync session expired. Tap Sync Numbers again.');
   }
 
+  const pid = normalizePanelId(bucket.panelId || 'panel1');
   const text =
-    `📲 *SELECT SERVICE FOR ${bucket.countryLabel.toUpperCase()}*\n` +
-    `🟩 *নম্বর সংখ্যা:* *${bucket.phones.length} টি*\n` +
-    `🟦 *নিচের সার্ভিস বেছে নিন অথবা ✍️ Custom Service চেপে নিজে নাম লিখুন:*`;
+    `📲 *SELECT SERVICE FOR ${bucket.countryLabel.toUpperCase()} (${pid.toUpperCase()})*\n` +
+    `🟩 *Numbers Count:* *${bucket.phones.length}*\n` +
+    `🟦 *Choose a service below or tap Custom Service:*`;
 
   const markup = {
     inline_keyboard: [
@@ -2455,7 +2483,7 @@ bot.action(/^adm_sync_c_(.+)$/, async (ctx) => {
         { text: '✍️ Custom Service', callback_data: `adm_sync_custom_${encodeURIComponent(cKey)}`, style: 'primary' }
       ],
       [
-        { text: '⬅️ Back to Countries', callback_data: 'adm_sync_panel_menu', style: 'danger' }
+        { text: '⬅️ Back to Countries', callback_data: `adm_sync_panel_${pid}`, style: 'danger' }
       ]
     ]
   };
@@ -2467,7 +2495,7 @@ bot.action(/^adm_sync_s_(.+)__(.+)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const cKey = decodeURIComponent(ctx.match[1] || '');
   const srv = decodeURIComponent(ctx.match[2] || 'Telegram');
-  await ctx.answerCbQuery(`${srv} এ যুক্ত হচ্ছে...`);
+  await ctx.answerCbQuery(`Importing into ${srv}...`);
   return commitSyncedCountryNumbers(ctx, cKey, srv);
 });
 
@@ -2478,7 +2506,7 @@ bot.action(/^adm_sync_custom_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
 
   if (!bucket) {
-    return showAdminBoardInReplyMenu(ctx, '⚠️ সেশন শেষ হয়ে গেছে। আবার Sync Panel Num চাপুন।');
+    return showAdminBoardInReplyMenu(ctx, 'Sync session expired. Tap Sync Numbers again.');
   }
 
   state.adminWizard.set(ctx.from.id, {
@@ -2489,67 +2517,66 @@ bot.action(/^adm_sync_custom_(.+)$/, async (ctx) => {
   return sendCleanBoard(
     ctx,
     `✍️ *CUSTOM SERVICE — ${bucket.countryLabel}*\n` +
-      `🟩 *এই ${bucket.phones.length} টি নম্বর যে সার্ভিসে যুক্ত করতে চান সেটির নাম লিখে পাঠান*`,
+      `🟩 *Type the service name for these ${bucket.phones.length} numbers*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_sync_c_${encodeURIComponent(cKey)}`, style: 'danger' }]] },
     true
   );
 });
 
-bot.action('adm_del_menu', async (ctx) => {
+bot.action(/^adm_del_menu_(panel1|panel2)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  const pid = normalizePanelId(ctx.match[1]);
   await ctx.answerCbQuery();
-  await openDeleteNumbersMenu(ctx, true);
+  await openDeleteNumbersMenu(ctx, pid, true);
 });
 
-bot.action(/^adm_del_srv_(.+)$/, async (ctx) => {
+bot.action(/^adm_del_srv_(panel1|panel2)__(.+)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const rawSrv = decodeURIComponent(ctx.match[1] || '').trim();
+  const pid = normalizePanelId(ctx.match[1]);
+  const rawSrv = decodeURIComponent(ctx.match[2] || '').trim();
   const targetSrv = rawSrv.toLowerCase();
   const beforeCount = (state.customNumbers || []).length;
 
-  state.customNumbers = (state.customNumbers || []).filter(
-    (x) => (String(x?.service || 'Telegram').trim() || 'Telegram').toLowerCase() !== targetSrv
-  );
+  state.customNumbers = (state.customNumbers || []).filter((x) => {
+    const itemPid = normalizePanelId(x?.panelId || 'panel1');
+    const itemSrv = (String(x?.service || 'Telegram').trim() || 'Telegram').toLowerCase();
+    return !(itemPid === pid && itemSrv === targetSrv);
+  });
   const removedCount = beforeCount - state.customNumbers.length;
   await dbPut('customNumbers/list', state.customNumbers);
 
-  await ctx.answerCbQuery(`${removedCount} টি নম্বর ডিলিট হয়েছে`);
+  await ctx.answerCbQuery(`Deleted ${removedCount} numbers`);
   await showAdminBoardInReplyMenu(
     ctx,
-    `🗑️ *${rawSrv}* সার্ভিসের *${removedCount} টি* নম্বর ডিলিট করা হয়েছে।`
+    `Deleted ${removedCount} ${rawSrv} numbers from ${pid.toUpperCase()}.`
   );
 });
 
-bot.action(/^adm_del_sc_(.+)__(.+)$/, async (ctx) => {
+bot.action(/^adm_del_sc_(panel1|panel2)__(.+)__(.+)$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const rawSrv = decodeURIComponent(ctx.match[1] || '').trim();
-  const rawCountryKey = decodeURIComponent(ctx.match[2] || '').trim();
+  const pid = normalizePanelId(ctx.match[1]);
+  const rawSrv = decodeURIComponent(ctx.match[2] || '').trim();
+  const rawCountryKey = decodeURIComponent(ctx.match[3] || '').trim();
   const targetSrv = rawSrv.toLowerCase();
   const targetCountryKey = rawCountryKey.toLowerCase();
   const beforeCount = (state.customNumbers || []).length;
 
   state.customNumbers = (state.customNumbers || []).filter((x) => {
+    const itemPid = normalizePanelId(x?.panelId || 'panel1');
     const itemSrv = (String(x?.service || 'Telegram').trim() || 'Telegram').toLowerCase();
     const cInfo = resolveCountryInfo(x?.countryName || x?.phone, x?.phone);
     const itemCountryKey = String(x?.countryKey || cInfo.key || 'global').toLowerCase();
-    return !(itemSrv === targetSrv && itemCountryKey === targetCountryKey);
+    return !(itemPid === pid && itemSrv === targetSrv && itemCountryKey === targetCountryKey);
   });
 
   const removedCount = beforeCount - state.customNumbers.length;
   await dbPut('customNumbers/list', state.customNumbers);
 
-  await ctx.answerCbQuery(`${removedCount} টি নম্বর ডিলিট হয়েছে`);
+  await ctx.answerCbQuery(`Deleted ${removedCount} numbers`);
   await showAdminBoardInReplyMenu(
     ctx,
-    `🗑️ *${rawSrv}* (${rawCountryKey.toUpperCase()}) এর *${removedCount} টি* নম্বর ডিলিট করা হয়েছে।`
+    `Deleted ${removedCount} ${rawSrv} (${rawCountryKey.toUpperCase()}) numbers from ${pid.toUpperCase()}.`
   );
-});
-
-bot.action('adm_back_mgr', async (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  state.adminWizard.delete(ctx.from.id);
-  await ctx.answerCbQuery();
-  await openPanelAndNumberManagerBoard(ctx, true);
 });
 
 bot.action('adm_back_board', async (ctx) => {
@@ -2564,7 +2591,7 @@ bot.hears(/^⬅️ Main Menu(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.adminWizard.delete(ctx.from.id);
   await sendCleanBoard(
     ctx,
-    `🟩 *MAIN MENU BOARD*\n🟦 *মূল মেনুতে ফিরে আসা হয়েছে*`,
+    `🟩 *MAIN MENU BOARD*\n🟦 *Returned to main menu*`,
     getMainKeyboard(true)
   );
 });
@@ -2586,12 +2613,12 @@ bot.hears(/^🧪 Test SMS(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (sent.ok) {
     await showAdminBoardInReplyMenu(
       ctx,
-      `✅ Test SMS OTP গ্রুপ (${sent.target})-এ পাঠানো হয়েছে (Code: 284-915)`
+      `Test SMS sent to OTP Group (${sent.target}) (Code: 284-915)`
     );
   } else {
     await showAdminBoardInReplyMenu(
       ctx,
-      `⚠️ Test SMS পাঠানো যায়নি। কারণ: ${sent.reason}`
+      `Failed to send Test SMS: ${sent.reason}`
     );
   }
 });
@@ -2602,54 +2629,54 @@ bot.hears(/^(?:🟢 API: ON|🔴 API: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) =>
   state.cachedRanges = null;
   state.cachedNumbers = null;
   await dbPut('config/apiUrlEnabled', state.apiEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ Panel API চালু হয়েছে।' : '⛔ Panel API বন্ধ হয়েছে।');
+  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? 'Panel API enabled.' : 'Panel API disabled.');
 });
 
 bot.hears(/^🔢 Range: (?:ON|OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.rangeEnabled = !state.rangeEnabled;
   await dbPut('config/rangeEnabled', state.rangeEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.rangeEnabled ? '✅ Range চালু হয়েছে।' : '⛔ Range বন্ধ হয়েছে।');
+  await showAdminBoardInReplyMenu(ctx, state.rangeEnabled ? 'Range enabled.' : 'Range disabled.');
 });
 
 bot.hears(/^(?:💰 Reward: ON|⚪ Zero Mode)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.rewardEnabled = !state.rewardEnabled;
   await dbPut('config/rewardEnabled', state.rewardEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.rewardEnabled ? '✅ Reward চালু হয়েছে।' : '⚪ Zero Balance মোড সক্রিয়।');
+  await showAdminBoardInReplyMenu(ctx, state.rewardEnabled ? 'Reward enabled.' : 'Zero balance mode enabled.');
 });
 
 bot.hears(/^(?:🔔 Alert: ON|🔕 Alert: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.newNumberNotify = !state.newNumberNotify;
   await dbPut('config/newNumberNotify', state.newNumberNotify);
-  await showAdminBoardInReplyMenu(ctx, state.newNumberNotify ? '🔔 ২০-মিনিট হিট Alert চালু।' : '🔕 ২০-মিনিট হিট Alert বন্ধ।');
+  await showAdminBoardInReplyMenu(ctx, state.newNumberNotify ? 'Stock & Hit Alerts enabled.' : 'Stock & Hit Alerts disabled.');
 });
 
 bot.hears(/^(?:📝 Mode: Short|📄 Mode: Long)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.shortMsgMode = !state.shortMsgMode;
   await dbPut('config/shortMsgMode', state.shortMsgMode);
-  await showAdminBoardInReplyMenu(ctx, `✉️ OTP Group মেসেজ মোড: ${state.shortMsgMode ? 'Short' : 'Long'}`);
+  await showAdminBoardInReplyMenu(ctx, `OTP Group format: ${state.shortMsgMode ? 'Short' : 'Long'}`);
 });
 
 bot.hears(/^(?:🔒 Gate: ON|🔓 Gate: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.joinCheckEnabled = !state.joinCheckEnabled;
   await dbPut('config/joinCheckEnabled', state.joinCheckEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.joinCheckEnabled ? '🔒 Join Gate চালু।' : '🔓 Join Gate বন্ধ।');
+  await showAdminBoardInReplyMenu(ctx, state.joinCheckEnabled ? 'Join Gate enabled.' : 'Join Gate disabled.');
 });
 
 bot.hears(/^👤 Owner(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, { step: 'owner' });
-  await sendCleanBoard(ctx, '👤 *OWNER BOARD*\n🟦 *নতুন Owner ইউজারনেম পাঠান (@username)*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '👤 *OWNER BOARD*\n🟦 *Send new Owner username (@username)*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📢 Main Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, { step: 'main_grp' });
-  await sendCleanBoard(ctx, '📢 *MAIN GROUP BOARD*\n🟦 *Main Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '📢 *MAIN GROUP BOARD*\n🟦 *Send Main Group link and Chat ID*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -2657,7 +2684,7 @@ bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   state.adminWizard.set(ctx.from.id, { step: 'otp_grp' });
   await sendCleanBoard(
     ctx,
-    '📩 *OTP GROUP BOARD*\n🟩 *OTP Group লিংক ও Chat ID পাঠান (প্রাইভেট লিংক হলে Chat ID দিন)*',
+    '📩 *OTP GROUP BOARD*\n🟩 *Send OTP Group link and Chat ID (include -100... Chat ID for private links)*',
     getAdminPanelAsMainKeyboard()
   );
 });
@@ -2665,13 +2692,13 @@ bot.hears(/^📩 OTP Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 bot.hears(/^📡 Range Group(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, { step: 'rng_grp' });
-  await sendCleanBoard(ctx, '📡 *RANGE GROUP BOARD*\n🟦 *Range Group লিংক ও Chat ID পাঠান*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '📡 *RANGE GROUP BOARD*\n🟦 *Send Range Group link and Chat ID*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📣 Broadcast(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.adminWizard.set(ctx.from.id, { step: 'bcast' });
-  await sendCleanBoard(ctx, '📣 *BROADCAST BOARD*\n🟨 *সব ইউজারকে পাঠানোর মেসেজ লিখুন*', getAdminPanelAsMainKeyboard());
+  await sendCleanBoard(ctx, '📣 *BROADCAST BOARD*\n🟨 *Type the broadcast message for all users*', getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^👥 Stats(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -2708,9 +2735,9 @@ bot.hears(/^📊 Num Status(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 
   const customSection =
     `🟩 *Number Pool (Panel 1 + Panel 2 + Uploaded):*\n` +
-    `  • মোট নম্বর: *${st.customTotal}*\n` +
-    `  • ব্যবহার হয়েছে: *${st.customUsed}*\n` +
-    `  • ব্যবহার হয়নি: *${st.customUnused}*`;
+    `  • Total Numbers: *${st.customTotal}*\n` +
+    `  • Used: *${st.customUsed}*\n` +
+    `  • Unused (Ready): *${st.customUnused}*`;
 
   const text = `📊 *NUMBER USAGE STATUS*\n\n${customSection}`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
@@ -2746,7 +2773,7 @@ async function commitAddedNumbers(ctx, wiz) {
   const srv = String(wiz.service || 'Telegram').trim() || 'Telegram';
   const rawCountry = String(wiz.country || '').trim();
   const phones = Array.isArray(wiz.phones) ? wiz.phones : [];
-  const activePid = getActiveSyncPanelId();
+  const pid = normalizePanelId(wiz.panelId || getActiveSyncPanelId());
 
   const addedEntries = [];
   for (const rawPhone of phones) {
@@ -2759,7 +2786,7 @@ async function commitAddedNumbers(ctx, wiz) {
     addedEntries.push({
       service: srv,
       phone: finalPhone,
-      panelId: activePid,
+      panelId: pid,
       countryKey: cInfo.key,
       countryName: cInfo.name,
       countryLabel: cInfo.label,
@@ -2771,22 +2798,25 @@ async function commitAddedNumbers(ctx, wiz) {
   }
 
   if (!addedEntries.length) {
-    return showAdminBoardInReplyMenu(ctx, '⚠️ কোনো বৈধ নম্বর সেট করা যায়নি।');
+    return showAdminBoardInReplyMenu(ctx, 'No valid phone numbers found to add.');
   }
 
   state.customNumbers = [...addedEntries, ...(state.customNumbers || [])].slice(0, 1000);
   await dbPut('customNumbers/list', state.customNumbers);
 
-  const firstCountry = addedEntries[0]?.countryLabel || resolveCountryInfo(rawCountry).label;
+  const firstEntry = addedEntries[0];
   await sendNewNumberNotificationToUsers({
     service: srv,
-    countryLabel: firstCountry,
+    countryLabel: firstEntry?.countryLabel || resolveCountryInfo(rawCountry).label,
+    countryName: firstEntry?.countryName || resolveCountryInfo(rawCountry).name,
+    flag: firstEntry?.flag || resolveCountryInfo(rawCountry).flag,
+    range: firstEntry?.range || 'auto',
     count: addedEntries.length
   });
 
   return showAdminBoardInReplyMenu(
     ctx,
-    `✅ ${addedEntries.length} টি নম্বর যুক্ত হয়েছে (${firstCountry} • ${srv})`
+    `Added ${addedEntries.length} numbers (${firstEntry?.countryLabel || ''} • ${srv} • ${pid.toUpperCase()})`
   );
 }
 
@@ -2797,6 +2827,7 @@ bot.on('document', async (ctx) => {
 
   const wiz = state.adminWizard.get(uid);
   if (wiz.step !== 'add_num_numbers') return;
+  const pid = normalizePanelId(wiz.panelId || 'panel1');
 
   try {
     const fileId = ctx.message.document.file_id;
@@ -2807,8 +2838,8 @@ bot.on('document', async (ctx) => {
     if (!phones.length) {
       return sendCleanBoard(
         ctx,
-        `⚠️ *ফাইলে কোনো সঠিক ফোন নম্বর পাওয়া যায়নি।*\nআবার নম্বর অথবা ফাইল পাঠান।`,
-        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+        `⚠️ *No valid phone numbers found in file.*\nSend numbers or upload another \`.txt\` file.`,
+        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]] },
         false
       );
     }
@@ -2818,7 +2849,7 @@ bot.on('document', async (ctx) => {
     return commitAddedNumbers(ctx, wiz);
   } catch (err) {
     console.error('[DOC ADD NUM ERR]:', err.message);
-    return showAdminBoardInReplyMenu(ctx, '⚠️ নম্বর ফাইল পড়তে সমস্যা হয়েছে।');
+    return showAdminBoardInReplyMenu(ctx, 'Failed to read number file.');
   }
 });
 
@@ -2832,7 +2863,7 @@ bot.on('text', async (ctx) => {
     state.waitingRangeFrom.delete(uid);
     const cleanRange = txt.replace(/[^\dA-Za-z_-]/g, '');
     if (!cleanRange) {
-      return sendCleanBoard(ctx, '🟧 *WARNING BOARD*\n🟦 *সঠিক Range লিখুন*', {
+      return sendCleanBoard(ctx, '🟧 *WARNING BOARD*\n🟦 *Enter a valid Range*', {
         inline_keyboard: [[{ text: '🔢 Set Range', callback_data: `ask_rng_${encodeURIComponent(service)}`, style: 'primary' }]]
       });
     }
@@ -2842,19 +2873,20 @@ bot.on('text', async (ctx) => {
   if (ADMIN_IDS.includes(uid) && state.adminWizard.has(uid)) {
     const wiz = state.adminWizard.get(uid);
     const mode = wiz.step;
+    const pid = normalizePanelId(wiz.panelId || 'panel1');
 
     if (mode === 'baseurl') {
       state.adminWizard.delete(uid);
       const cleanedUrl = txt.replace(/\/+$/, '');
       if (!/^https?:\/\/.+/i.test(cleanedUrl)) {
-        return showAdminBoardInReplyMenu(ctx, '⚠️ সঠিক http/https Base URL দিন।');
+        return showAdminBoardInReplyMenu(ctx, 'Please enter a valid http/https Base URL for Panel 1.');
       }
       state.baseUrl = cleanedUrl;
       state.cachedRanges = null;
       state.cachedNumbers = null;
       hitSnapshotsByKey.clear();
       await dbPut('config/baseUrl', cleanedUrl);
-      return showAdminBoardInReplyMenu(ctx, `✅ নতুন Panel 1 URL সেট হয়েছে: ${getPanelBaseUrl('panel1')}`);
+      return showAdminBoardInReplyMenu(ctx, `Panel 1 API URL updated: ${getPanelBaseUrl('panel1')}`);
     }
 
     if (mode === 'key') {
@@ -2863,20 +2895,20 @@ bot.on('text', async (ctx) => {
       state.cachedRanges = null;
       state.cachedNumbers = null;
       await dbPut('config/apiKey', txt);
-      return showAdminBoardInReplyMenu(ctx, '✅ নতুন Panel 1 API Token সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, 'Panel 1 API Key updated.');
     }
 
     if (mode === 'p2_url') {
       state.adminWizard.delete(uid);
       const cleanedUrl = txt.replace(/\/+$/, '');
       if (!/^https?:\/\/.+/i.test(cleanedUrl)) {
-        return showAdminBoardInReplyMenu(ctx, '⚠️ Panel 2-এর জন্য সঠিক http/https API URL দিন।');
+        return showAdminBoardInReplyMenu(ctx, 'Please enter a valid http/https API URL for Panel 2.');
       }
       state.panel2Url = cleanedUrl;
       state.cachedRanges = null;
       state.cachedNumbers = null;
       await dbPut('config/panel2Url', cleanedUrl);
-      return showAdminBoardInReplyMenu(ctx, `✅ নতুন Universal Panel 2 URL সেট হয়েছে: ${getPanelBaseUrl('panel2')}`);
+      return showAdminBoardInReplyMenu(ctx, `Panel 2 API URL updated: ${getPanelBaseUrl('panel2')}`);
     }
 
     if (mode === 'p2_key') {
@@ -2885,7 +2917,7 @@ bot.on('text', async (ctx) => {
       state.cachedRanges = null;
       state.cachedNumbers = null;
       await dbPut('config/panel2Key', txt);
-      return showAdminBoardInReplyMenu(ctx, '✅ নতুন Universal Panel 2 API Key সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, 'Panel 2 API Key updated.');
     }
 
     if (mode === 'sync_custom_service') {
@@ -2900,10 +2932,10 @@ bot.on('text', async (ctx) => {
       state.adminWizard.set(uid, wiz);
       return sendCleanBoard(
         ctx,
-        `➕ *ADD NUMBER — ধাপ ২/৩ (দেশ)*\n` +
-          `🟦 *সার্ভিস:* *${txt}*\n` +
-          `🟩 *দেশের নাম বা কোড লিখুন (যেমন: \`Sudan\`, \`Vietnam\`, \`US\`)*`,
-        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+        `➕ *ADD NUMBER (${pid.toUpperCase()}) — STEP 2/3 (COUNTRY)*\n` +
+          `🟦 *Service:* *${txt}*\n` +
+          `🟩 *Enter country name or ISO code (e.g. \`Sudan\`, \`Vietnam\`, \`US\`)*`,
+        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]] },
         false
       );
     }
@@ -2915,10 +2947,10 @@ bot.on('text', async (ctx) => {
       const cInfo = resolveCountryInfo(txt);
       return sendCleanBoard(
         ctx,
-        `➕ *ADD NUMBER — ধাপ ৩/৩ (নম্বর বা নম্বর ফাইল)*\n` +
-          `🟦 *সার্ভিস:* *${wiz.service}* | *দেশ:* *${cInfo.label}*\n` +
-          `🟩 *একটি নম্বর, একাধিক নম্বর (প্রতি লাইনে একটি), অথবা \`.txt\` নম্বর ফাইল পাঠান*`,
-        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+        `➕ *ADD NUMBER (${pid.toUpperCase()}) — STEP 3/3 (NUMBERS OR FILE)*\n` +
+          `🟦 *Service:* *${wiz.service}* | *Country:* *${cInfo.label}*\n` +
+          `🟩 *Send one number, multiple numbers (one per line), or a \`.txt\` file*`,
+        { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]] },
         false
       );
     }
@@ -2928,8 +2960,8 @@ bot.on('text', async (ctx) => {
       if (!phones.length) {
         return sendCleanBoard(
           ctx,
-          `⚠️ *সঠিক ফোন নম্বর পাওয়া যায়নি।*\nনম্বর অথবা \`.txt\` ফাইল পাঠান।`,
-          { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+          `⚠️ *No valid phone numbers found.*\nSend numbers or upload a \`.txt\` file.`,
+          { inline_keyboard: [[{ text: '⬅️ Back', callback_data: `adm_open_${pid}`, style: 'danger' }]] },
           false
         );
       }
@@ -2946,7 +2978,7 @@ bot.on('text', async (ctx) => {
       if (parts[1]) state.mainGroupId = parts[1];
       await dbPut('config/mainGroupLink', state.mainGroupLink);
       if (parts[1]) await dbPut('config/mainGroupId', state.mainGroupId);
-      return showAdminBoardInReplyMenu(ctx, '✅ Main Group সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, 'Main Group updated.');
     }
     if (mode === 'otp_grp') {
       const parts = txt.split(/\s+/);
@@ -2954,7 +2986,7 @@ bot.on('text', async (ctx) => {
       if (parts[1]) state.otpGroupId = parts[1];
       await dbPut('config/otpGroupLink', state.otpGroupLink);
       if (parts[1]) await dbPut('config/otpGroupId', state.otpGroupId);
-      return showAdminBoardInReplyMenu(ctx, '✅ OTP Group সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, 'OTP Group updated.');
     }
     if (mode === 'rng_grp') {
       const parts = txt.split(/\s+/);
@@ -2962,12 +2994,12 @@ bot.on('text', async (ctx) => {
       if (parts[1]) state.rangeGroupId = parts[1];
       await dbPut('config/rangeGroupLink', state.rangeGroupLink);
       if (parts[1]) await dbPut('config/rangeGroupId', state.rangeGroupId);
-      return showAdminBoardInReplyMenu(ctx, '✅ Range Group সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, 'Range Group updated.');
     }
     if (mode === 'owner') {
       state.ownerContact = txt;
       await dbPut('config/ownerContact', txt);
-      return showAdminBoardInReplyMenu(ctx, '✅ Owner তথ্য সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, 'Owner contact updated.');
     }
     if (mode === 'bcast') {
       let sent = 0;
@@ -2977,14 +3009,14 @@ bot.on('text', async (ctx) => {
           sent++;
         } catch (_) {}
       }
-      return showAdminBoardInReplyMenu(ctx, `✅ ব্রডকাস্ট পাঠানো হয়েছে: ${sent} জনকে।`);
+      return showAdminBoardInReplyMenu(ctx, `Broadcast sent to ${sent} users.`);
     }
   }
 
   if (state.waitingSupportFrom.has(uid)) {
     state.waitingSupportFrom.delete(uid);
     await rawSendMessage(SUPPORT_TARGET_ID, `📩 *SUPPORT FROM* \`${uid}\`\n🟩 *${txt}*`);
-    return sendCleanBoard(ctx, '🟩 *SENT BOARD*\n🟦 *মেসেজ সাপোর্টে পাঠানো হয়েছে*', {
+    return sendCleanBoard(ctx, '🟩 *SENT BOARD*\n🟦 *Your message has been sent to support*', {
       inline_keyboard: [[{ text: '🟢 Get Number', callback_data: 'back_services', style: 'success' }]]
     });
   }
@@ -3067,13 +3099,13 @@ if (SELF_URL) {
 
   try {
     await bot.telegram.setMyCommands([
-      { command: 'start', description: 'মূল মেনু চালু করুন' },
-      { command: 'getnumber', description: 'নতুন নম্বর নিন' }
+      { command: 'start', description: 'Open main menu' },
+      { command: 'getnumber', description: 'Get new numbers' }
     ]);
   } catch (_) {}
 
   await bot.launch();
-  console.log('Dual-Panel Bot running with 3-Number Cards & Universal Panel 2...');
+  console.log('English Dual-Panel Bot running...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
