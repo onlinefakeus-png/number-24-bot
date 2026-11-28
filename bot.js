@@ -16,6 +16,9 @@ const IMS_DEFAULT_URL = String(process.env.IMS_BASE_URL || 'https://imssms.org/a
   .replace(/\/+$/, '');
 const IMS_DEFAULT_TOKEN = String(process.env.IMS_API_TOKEN || '').trim();
 
+const PANEL2_DEFAULT_URL = String(process.env.PANEL2_BASE_URL || '').trim().replace(/\/+$/, '');
+const PANEL2_DEFAULT_TOKEN = String(process.env.PANEL2_API_TOKEN || '').trim();
+
 const TWENTY_MIN_MS = 20 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
 const OTP_POLL_MS = 6000;
@@ -165,8 +168,11 @@ const state = {
   rewardEnabled: true,
   shortMsgMode: false,
   newNumberNotify: true,
+  activeSyncPanel: 'panel1',
   baseUrl: IMS_DEFAULT_URL,
   apiKey: IMS_DEFAULT_TOKEN,
+  panel2Url: PANEL2_DEFAULT_URL,
+  panel2Key: PANEL2_DEFAULT_TOKEN,
   customNumbers: [],
   joinCheckEnabled: true,
   mainGroupLink: process.env.MAIN_GROUP_LINK || 'https://t.me/nhbdofficial',
@@ -197,19 +203,42 @@ const state = {
 const hitSnapshotsByKey = new Map();
 let lastImsCallTs = 0;
 
-function getImsBaseUrl() {
-  let cleaned = String(state.baseUrl || IMS_DEFAULT_URL || '')
-    .trim()
-    .replace(/\/+$/, '');
+function normalizePanelId(panelId) {
+  return String(panelId || '').toLowerCase() === 'panel2' ? 'panel2' : 'panel1';
+}
 
-  // যদি URL-এর শেষে /messages, /numbers, /ranges বা /cdrs থাকে, তবে আসল Base URL বের করে নেবে
-  cleaned = cleaned.replace(/\/(messages|numbers|ranges|cdrs)$/i, '').replace(/\/+$/, '');
+function getActiveSyncPanelId() {
+  return normalizePanelId(state.activeSyncPanel);
+}
 
+function cleanBaseRootUrl(rawUrl) {
+  let cleaned = String(rawUrl || '').trim().replace(/\/+$/, '');
+  cleaned = cleaned.replace(/\/(messages|numbers|ranges|cdrs|sms|otp|getnumber|getnum)$/i, '').replace(/\/+$/, '');
   return /^https?:\/\//i.test(cleaned) ? cleaned : '';
 }
 
-function getImsApiToken() {
+function getPanelBaseUrl(panelId = 'panel1') {
+  const pid = normalizePanelId(panelId);
+  if (pid === 'panel2') {
+    return cleanBaseRootUrl(state.panel2Url || PANEL2_DEFAULT_URL || '');
+  }
+  return cleanBaseRootUrl(state.baseUrl || IMS_DEFAULT_URL || '');
+}
+
+function getPanelApiToken(panelId = 'panel1') {
+  const pid = normalizePanelId(panelId);
+  if (pid === 'panel2') {
+    return String(state.panel2Key || PANEL2_DEFAULT_TOKEN || '').trim();
+  }
   return String(state.apiKey || IMS_DEFAULT_TOKEN || '').trim();
+}
+
+function getImsBaseUrl() {
+  return getPanelBaseUrl(getActiveSyncPanelId());
+}
+
+function getImsApiToken() {
+  return getPanelApiToken(getActiveSyncPanelId());
 }
 
 function maskImsToken(token) {
@@ -219,12 +248,16 @@ function maskImsToken(token) {
   return `${t.slice(0, 8)}••••••••••••${t.slice(-4)}`;
 }
 
-function isImsReady() {
-  return Boolean(state.apiEnabled && getImsBaseUrl() && getImsApiToken());
+function isPanelConfigured(panelId = getActiveSyncPanelId()) {
+  return Boolean(state.apiEnabled && getPanelBaseUrl(panelId) && getPanelApiToken(panelId));
 }
 
-function getImsEndpoints() {
-  const root = getImsBaseUrl();
+function isImsReady() {
+  return isPanelConfigured(getActiveSyncPanelId());
+}
+
+function getPanelEndpoints(panelId = getActiveSyncPanelId()) {
+  const root = getPanelBaseUrl(panelId);
   if (!root) {
     return {
       base: '',
@@ -243,16 +276,21 @@ function getImsEndpoints() {
   };
 }
 
-function buildImsUrl(endpointUrl, extraParams = {}) {
+function getImsEndpoints() {
+  return getPanelEndpoints(getActiveSyncPanelId());
+}
+
+function buildPanelUrl(endpointUrl, extraParams = {}, panelId = 'panel1') {
   const rawEndpoint = String(endpointUrl || '').trim();
-  const base = getImsBaseUrl();
+  const base = getPanelBaseUrl(panelId);
   const validEndpoint = /^https?:\/\//i.test(rawEndpoint)
     ? rawEndpoint
     : `${base}/${rawEndpoint.replace(/^\/+/, '')}`;
 
-  const token = getImsApiToken();
+  const token = getPanelApiToken(panelId);
   const merged = {
     token,
+    api_key: token,
     ...extraParams
   };
 
@@ -267,21 +305,23 @@ function buildImsUrl(endpointUrl, extraParams = {}) {
 
 async function paceImsRateLimit() {
   const now = Date.now();
-  const waitMs = Math.max(0, 1000 - (now - lastImsCallTs));
+  const waitMs = Math.max(0, 650 - (now - lastImsCallTs));
   if (waitMs > 0) {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
   lastImsCallTs = Date.now();
 }
 
-async function callImsPanel(endpointUrl, extraParams = {}, timeout = 20000) {
+async function callPanelRequest(endpointUrl, extraParams = {}, timeout = 20000, panelId = 'panel1') {
   await paceImsRateLimit();
-  const token = getImsApiToken();
-  const fullUrl = buildImsUrl(endpointUrl, extraParams);
+  const token = getPanelApiToken(panelId);
+  const fullUrl = buildPanelUrl(endpointUrl, extraParams, panelId);
   return axios.get(fullUrl, {
     timeout,
     headers: {
       Authorization: `Bearer ${token}`,
+      'X-API-Key': token,
+      'api-key': token,
       Accept: 'application/json'
     }
   });
@@ -546,16 +586,20 @@ async function registerUser(userId) {
 }
 
 async function saveNumberToHistory(uid, item) {
-  const entry = {
-    uid: String(uid),
-    service: item.service,
-    range: item.range || 'auto',
-    phone: item.phone,
-    orderId: item.orderId || null,
-    country: item.countryLabel,
-    time: new Date().toISOString()
-  };
-  state.numberHistory = [entry, ...state.numberHistory.filter((x) => x.phone !== item.phone)].slice(0, 300);
+  const list = Array.isArray(item.items) && item.items.length ? item.items : [item];
+  for (const sub of list) {
+    const entry = {
+      uid: String(uid),
+      service: sub.service,
+      range: sub.range || 'auto',
+      phone: sub.phone,
+      panelId: normalizePanelId(sub.panelId || item.panelId),
+      orderId: sub.orderId || null,
+      country: sub.countryLabel,
+      time: new Date().toISOString()
+    };
+    state.numberHistory = [entry, ...state.numberHistory.filter((x) => x.phone !== sub.phone)].slice(0, 300);
+  }
   await dbPut('history/numbers', state.numberHistory);
 }
 
@@ -609,6 +653,7 @@ function getMainKeyboard(isAdmin) {
 }
 
 function getAdminPanelAsMainKeyboard() {
+  const activeTag = getActiveSyncPanelId() === 'panel2' ? 'P2' : 'P1';
   return {
     keyboard: [
       [
@@ -624,7 +669,7 @@ function getAdminPanelAsMainKeyboard() {
         { text: state.joinCheckEnabled ? '🔒 Gate: ON ⋮⋮⋮⋮' : '🔓 Gate: OFF ⋮⋮⋮⋮', style: state.joinCheckEnabled ? 'success' : 'danger' }
       ],
       [
-        { text: '⚙️ Panel & Add Num ⋮⋮⋮⋮', style: 'success' },
+        { text: `⚙️ Panel & Add Num (${activeTag}) ⋮⋮⋮⋮`, style: 'success' },
         { text: '👤 Owner ⋮⋮⋮⋮', style: 'primary' }
       ],
       [
@@ -800,111 +845,165 @@ function normalizeActiveRangeList(rawData) {
   return [];
 }
 
-async function fetchActiveRanges() {
-  if (!isImsReady()) return [];
-  if (state.cachedRanges && Date.now() - state.cachedRanges.ts < 15000) {
+async function fetchActiveRanges(panelId = getActiveSyncPanelId()) {
+  const pid = normalizePanelId(panelId);
+  if (!isPanelConfigured(pid)) return [];
+  if (state.cachedRanges && state.cachedRanges.panelId === pid && Date.now() - state.cachedRanges.ts < 15000) {
     return state.cachedRanges.items;
   }
-  const ep = getImsEndpoints();
-  try {
-    const res = await callImsPanel(ep.ranges, {}, 20000);
-    const list = normalizeActiveRangeList(res.data);
-    state.cachedRanges = { items: list, ts: Date.now() };
-    return list;
-  } catch (err) {
-    console.error('[IMS RANGES ERR]:', err.response?.data || err.message);
-    return state.cachedRanges?.items || [];
+  const ep = getPanelEndpoints(pid);
+  const candidates = [ep.ranges, `${getPanelBaseUrl(pid)}/getranges`, `${getPanelBaseUrl(pid)}/active_ranges`].filter(Boolean);
+
+  for (const url of candidates) {
+    try {
+      const res = await callPanelRequest(url, {}, 20000, pid);
+      const list = normalizeActiveRangeList(res.data);
+      if (list.length > 0 || url === ep.ranges) {
+        state.cachedRanges = { panelId: pid, items: list, ts: Date.now() };
+        return list;
+      }
+    } catch (_) {}
   }
+
+  return state.cachedRanges?.panelId === pid ? state.cachedRanges.items : [];
 }
 
-async function fetchPanelBalanceRaw() {
-  if (!isImsReady()) return null;
-  const ep = getImsEndpoints();
-  try {
-    const res = await callImsPanel(ep.messages, { limit: 1 }, 15000);
-    const count = Number(res?.data?.count ?? (Array.isArray(res?.data?.records) ? res.data.records.length : 0));
-    return {
-      api: 'IMS REST v1 (OTP Mode)',
-      status: 'connected',
-      recentMessagesChecked: count
-    };
-  } catch (err) {
-    console.error('[IMS STATUS ERR]:', err.response?.data || err.message);
-    return null;
+async function fetchPanelBalanceRaw(panelId = getActiveSyncPanelId()) {
+  const pid = normalizePanelId(panelId);
+  if (!isPanelConfigured(pid)) return null;
+  const ep = getPanelEndpoints(pid);
+  const root = getPanelBaseUrl(pid);
+  const candidates = [ep.messages, `${root}/sms`, `${root}/balance`, `${root}/getbalance`, root].filter(Boolean);
+
+  for (const url of candidates) {
+    try {
+      const res = await callPanelRequest(url, { limit: 1 }, 15000, pid);
+      const d = res?.data;
+      if (d !== undefined && d !== null) {
+        const count = Number(d?.count ?? (Array.isArray(d?.records) ? d.records.length : Array.isArray(d?.data) ? d.data.length : 0));
+        return {
+          panel: pid === 'panel2' ? 'Universal Panel 2' : 'IMS Panel 1',
+          status: 'connected',
+          recentMessagesChecked: count,
+          balance: d?.balance ?? d?.data?.balance ?? null
+        };
+      }
+    } catch (_) {}
   }
+  return null;
 }
 
-async function fetchPanelRawNumberRecords() {
-  if (!isImsReady()) {
-    return { records: [], error: 'IMS API সেট বা চালু নেই' };
+function extractRecordsFromUniversalPayload(rawData) {
+  if (!rawData) return [];
+  if (Array.isArray(rawData)) return rawData;
+  const keysToTry = ['records', 'data', 'numbers', 'items', 'rows', 'list', 'results', 'dids', 'phones'];
+  for (const k of keysToTry) {
+    if (Array.isArray(rawData?.[k])) return rawData[k];
+    if (rawData?.data && Array.isArray(rawData.data?.[k])) return rawData.data[k];
+  }
+  if (typeof rawData === 'object') {
+    const collected = [];
+    for (const [k, v] of Object.entries(rawData)) {
+      if (Array.isArray(v) && v.length > 0) {
+        collected.push(...v);
+      } else if (v && typeof v === 'object' && (v.number || v.phone || v.phoneNumber || v.msisdn || v.did)) {
+        collected.push({ id: k, ...v });
+      }
+    }
+    return collected;
+  }
+  return [];
+}
+
+async function fetchPanelRawNumberRecords(panelId = getActiveSyncPanelId()) {
+  const pid = normalizePanelId(panelId);
+  if (!isPanelConfigured(pid)) {
+    return { records: [], error: `${pid === 'panel2' ? 'Panel 2' : 'Panel 1'} API URL বা Token সেট করা নেই` };
   }
 
-  const ep = getImsEndpoints();
+  const ep = getPanelEndpoints(pid);
+  const root = getPanelBaseUrl(pid);
+  const endpointCandidates = pid === 'panel2'
+    ? [
+        ep.numbers,
+        `${root}/getnumbers`,
+        `${root}/get_numbers`,
+        `${root}/number/list`,
+        `${root}/sms/numbers`,
+        ep.ranges,
+        root
+      ].filter((u, idx, arr) => u && arr.indexOf(u) === idx)
+    : [ep.numbers];
+
   const allRecords = [];
-  let afterCursor = '';
-  const seenCursors = new Set();
-  let pageCount = 0;
+  let lastError = '';
 
-  try {
-    while (pageCount < 25) {
-      pageCount += 1;
-      const params = { limit: 500 };
-      if (afterCursor) params.after = afterCursor;
+  for (const targetEndpoint of endpointCandidates) {
+    let afterCursor = '';
+    const seenCursors = new Set();
+    let pageCount = 0;
 
-      const res = await callImsPanel(ep.numbers, params, 20000);
-      const data = res?.data || {};
+    try {
+      while (pageCount < 25) {
+        pageCount += 1;
+        const params = { limit: 500 };
+        if (afterCursor) params.after = afterCursor;
 
-      const rawList = Array.isArray(data?.records)
-        ? data.records
-        : Array.isArray(data?.data)
-        ? data.data
-        : Array.isArray(data?.numbers)
-        ? data.numbers
-        : Array.isArray(data)
-        ? data
-        : [];
+        const res = await callPanelRequest(targetEndpoint, params, 20000, pid);
+        const data = res?.data || {};
+        const rawList = extractRecordsFromUniversalPayload(data);
 
-      for (const rec of rawList) {
-        if (!rec) continue;
-        if (typeof rec === 'string' || typeof rec === 'number') {
-          allRecords.push({ number: String(rec) });
-          continue;
+        for (const rec of rawList) {
+          if (!rec) continue;
+          if (typeof rec === 'string' || typeof rec === 'number') {
+            allRecords.push({ number: String(rec), panelId: pid });
+            continue;
+          }
+          const candidatePhone =
+            rec.number ||
+            rec.phone ||
+            rec.phoneNumber ||
+            rec.phone_number ||
+            rec.msisdn ||
+            rec.did ||
+            rec.num ||
+            rec.mobile ||
+            '';
+          if (candidatePhone) {
+            allRecords.push({ ...rec, number: String(candidatePhone), panelId: pid });
+          }
         }
-        const candidatePhone =
-          rec.number ||
-          rec.phone ||
-          rec.phoneNumber ||
-          rec.phone_number ||
-          rec.msisdn ||
-          rec.did ||
-          '';
-        if (candidatePhone) {
-          allRecords.push({ ...rec, number: String(candidatePhone) });
+
+        const nextCur = data?.nextCursor ?? data?.next_cursor ?? data?.cursor ?? '';
+        if (!nextCur || !rawList.length || seenCursors.has(String(nextCur))) {
+          break;
         }
+        seenCursors.add(String(nextCur));
+        afterCursor = String(nextCur);
       }
 
-      const nextCur = data?.nextCursor ?? data?.next_cursor ?? data?.cursor ?? '';
-      if (!nextCur || !rawList.length || seenCursors.has(String(nextCur))) {
+      if (allRecords.length > 0) {
         break;
       }
-      seenCursors.add(String(nextCur));
-      afterCursor = String(nextCur);
+    } catch (err) {
+      lastError =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        err?.response?.status ||
+        err.message;
     }
-
-    console.log(`[SYNC PANEL] Fetched raw records: ${allRecords.length}`);
-    return { records: allRecords, error: '' };
-  } catch (err) {
-    const errDetail =
-      err?.response?.data?.message ||
-      err?.response?.data?.error ||
-      err?.response?.status ||
-      err.message;
-    console.error('[SYNC PANEL ERR]:', errDetail);
-    return { records: allRecords, error: String(errDetail) };
   }
+
+  console.log(`[SYNC PANEL ${pid}] Fetched raw records: ${allRecords.length}`);
+  if (!allRecords.length && lastError) {
+    console.error(`[SYNC PANEL ERR ${pid}]:`, lastError);
+    return { records: [], error: String(lastError) };
+  }
+  return { records: allRecords, error: '' };
 }
 
-function groupFetchedPanelNumbersByCountry(records = []) {
+function groupFetchedPanelNumbersByCountry(records = [], panelId = getActiveSyncPanelId()) {
+  const pid = normalizePanelId(panelId);
   const existingPhones = new Set(
     (state.customNumbers || [])
       .map((x) => String(x?.phone || '').replace(/[^\d]/g, ''))
@@ -920,7 +1019,7 @@ function groupFetchedPanelNumbersByCountry(records = []) {
 
     if (existingPhones.has(digits)) continue;
 
-    const rangeName = String(row?.range || row?.rangeId || '').trim();
+    const rangeName = String(row?.range || row?.rangeId || row?.country || '').trim();
     const prefixVal = String(row?.rangePrefix || '').replace(/[^\d]/g, '');
     const cInfo = resolveCountryInfo(phone, prefixVal || rangeName);
     const key = cInfo.key || 'global';
@@ -932,6 +1031,7 @@ function groupFetchedPanelNumbersByCountry(records = []) {
         countryLabel: cInfo.label,
         flag: cInfo.flag,
         dial: cInfo.dial,
+        panelId: pid,
         rangePrefix: prefixVal || digits.slice(0, 6),
         phones: []
       });
@@ -955,6 +1055,7 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
     return showAdminBoardInReplyMenu(ctx, '⚠️ এই দেশের কোনো পেন্ডিং নম্বর পাওয়া যায়নি বা আগেই লোড হয়েছে।');
   }
 
+  const pid = normalizePanelId(bucket.panelId || getActiveSyncPanelId());
   const existingPhones = new Set(
     (state.customNumbers || [])
       .map((x) => String(x?.phone || '').replace(/[^\d]/g, ''))
@@ -973,13 +1074,14 @@ async function commitSyncedCountryNumbers(ctx, countryKey, serviceName) {
     addedEntries.push({
       service: srv,
       phone: finalPhone,
+      panelId: pid,
       countryKey: cInfo.key,
       countryName: cInfo.name,
       countryLabel: cInfo.label,
       flag: cInfo.flag,
       range: bucket.rangePrefix || digits.slice(0, 6),
       used: false,
-      source: 'ims_panel',
+      source: `${pid}_sync`,
       addedAt: new Date().toISOString()
     });
   }
@@ -1017,53 +1119,76 @@ async function getPanelAndPoolNumberUsageStats() {
   };
 }
 
-function pickCustomNumberFromPool(service = 'Telegram', range = '', countryHint = '') {
+function pickMultipleCustomNumbersFromPool(service = 'Telegram', range = '', countryHint = '', limit = 3) {
   const cleanService = String(service || 'Telegram').trim().toLowerCase();
   const cleanRange = String(range || '').trim().toLowerCase();
   const cleanCountry = String(countryHint || '').trim().toLowerCase();
   const pool = Array.isArray(state.customNumbers) ? state.customNumbers : [];
+  const picked = [];
 
-  const idx = pool.findIndex((entry) => {
-    if (!entry || entry.used) return false;
+  for (let i = 0; i < pool.length && picked.length < limit; i += 1) {
+    const entry = pool[i];
+    if (!entry || entry.used) continue;
     const srvMatch = String(entry.service || '').toLowerCase() === cleanService;
-    if (!srvMatch) return false;
+    if (!srvMatch) continue;
 
     if (cleanCountry && cleanCountry !== 'auto') {
       const cName = String(entry.countryName || '').toLowerCase();
       const cKey = String(entry.countryKey || '').toLowerCase();
-      if (cName !== cleanCountry && cKey !== cleanCountry) return false;
+      if (cName !== cleanCountry && cKey !== cleanCountry) continue;
     }
 
-    if (!cleanRange || cleanRange === 'auto') return true;
-    const phoneDigits = String(entry.phone || '').replace(/[^\d]/g, '');
-    const rngStr = String(entry.range || '').toLowerCase();
-    return rngStr === cleanRange || phoneDigits.startsWith(cleanRange.replace(/[^\d]/g, ''));
-  });
+    if (cleanRange && cleanRange !== 'auto') {
+      const phoneDigits = String(entry.phone || '').replace(/[^\d]/g, '');
+      const rngStr = String(entry.range || '').toLowerCase();
+      if (rngStr !== cleanRange && !phoneDigits.startsWith(cleanRange.replace(/[^\d]/g, ''))) {
+        continue;
+      }
+    }
 
-  if (idx === -1) return null;
-  const chosen = pool[idx];
-  chosen.used = true;
-  return chosen;
+    entry.used = true;
+    picked.push(entry);
+  }
+
+  return picked;
 }
 
-async function requestGetNumberFromIms(service = 'Telegram', range = '') {
-  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
-  const customHit = pickCustomNumberFromPool(cleanService, range);
-  if (customHit) {
-    await dbPut('customNumbers/list', state.customNumbers);
-    const cInfo = resolveCountryInfo(customHit.phone, customHit.countryName || customHit.range);
+function buildSessionPayloadFromEntries(entries = [], fallbackService = 'Telegram') {
+  const cleanService = String(fallbackService || 'Telegram').trim() || 'Telegram';
+  const items = entries.map((hit, index) => {
+    const cInfo = resolveCountryInfo(hit.phone, hit.countryName || hit.range);
+    const pid = normalizePanelId(hit.panelId || getActiveSyncPanelId());
     return {
+      slot: index + 1,
+      panelId: pid,
       service: cleanService,
-      range: 'auto',
-      phone: customHit.phone,
-      orderId: customHit.orderId || `CUSTOM-${Date.now()}`,
+      range: hit.range || 'auto',
+      phone: hit.phone,
+      orderId: hit.orderId || `POOL-${pid}-${Date.now()}-${index + 1}`,
       countryKey: cInfo.key,
       countryName: cInfo.name,
       countryIso: cInfo.iso,
       countryLabel: cInfo.label,
       flag: cInfo.flag,
-      dial: cInfo.dial
+      dial: cInfo.dial,
+      otp: null,
+      otpDelivered: false
     };
+  });
+
+  const primary = items[0];
+  return {
+    ...primary,
+    items
+  };
+}
+
+async function requestGetNumberFromIms(service = 'Telegram', range = '') {
+  const cleanService = String(service || 'Telegram').trim() || 'Telegram';
+  const hits = pickMultipleCustomNumbersFromPool(cleanService, range, '', 3);
+  if (hits.length > 0) {
+    await dbPut('customNumbers/list', state.customNumbers);
+    return buildSessionPayloadFromEntries(hits, cleanService);
   }
 
   return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
@@ -1074,22 +1199,10 @@ async function requestNotificationNumber(service = 'Telegram', range = 'auto', c
   const cleanRange = String(range || 'auto').trim() || 'auto';
   const cleanCountry = String(country || '').trim();
 
-  const customHit = pickCustomNumberFromPool(cleanService, cleanRange, cleanCountry);
-  if (customHit) {
+  const hits = pickMultipleCustomNumbersFromPool(cleanService, cleanRange, cleanCountry, 3);
+  if (hits.length > 0) {
     await dbPut('customNumbers/list', state.customNumbers);
-    const cInfo = resolveCountryInfo(customHit.phone, customHit.countryName || cleanCountry || customHit.range);
-    return {
-      service: cleanService,
-      range: 'auto',
-      phone: customHit.phone,
-      orderId: customHit.orderId || `CUSTOM-${Date.now()}`,
-      countryKey: cInfo.key,
-      countryName: cInfo.name,
-      countryIso: cInfo.iso,
-      countryLabel: cInfo.label,
-      flag: cInfo.flag,
-      dial: cInfo.dial
-    };
+    return buildSessionPayloadFromEntries(hits, cleanService);
   }
 
   return { error: 'সব নম্বর ব্যবহার শেষ হয়ে গেছে। নতুন নম্বর যুক্ত না করা পর্যন্ত আর নম্বর দেওয়া হবে না।' };
@@ -1113,6 +1226,7 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
 
     const sess = {
       item: res,
+      items: res.items || [res],
       stripCC: false,
       autoChecker: true,
       otpDelivered: false,
@@ -1122,7 +1236,7 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
     };
     state.userSession.set(ctx.from.id, sess);
     await saveNumberToHistory(ctx.from.id, res);
-    const card = buildNumberCard(sess, null);
+    const card = buildNumberCard(sess);
     const sent = await sendCleanBoard(ctx, card.text, card.reply_markup, false);
     if (sent?.message_id) {
       sess.cardMsgId = sent.message_id;
@@ -1140,44 +1254,62 @@ async function handleNotificationNumberAction(ctx, service, range, country = '')
   }
 }
 
-async function fetchImsMessagesRows(cleanDigits) {
-  const ep = getImsEndpoints();
+function extractMessagesArrayFromPayload(rawData) {
+  if (!rawData) return [];
+  if (Array.isArray(rawData)) return rawData;
+  const keysToTry = ['records', 'data', 'messages', 'sms', 'items', 'rows', 'list', 'results'];
+  for (const k of keysToTry) {
+    if (Array.isArray(rawData?.[k])) return rawData[k];
+    if (rawData?.data && Array.isArray(rawData.data?.[k])) return rawData.data[k];
+  }
+  return [];
+}
+
+async function fetchPanelMessagesRows(cleanDigits, panelId = 'panel1') {
+  const pid = normalizePanelId(panelId);
+  if (!isPanelConfigured(pid)) return [];
+
+  const ep = getPanelEndpoints(pid);
+  const root = getPanelBaseUrl(pid);
   const nowUtc = new Date();
   const fromIso = new Date(nowUtc.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const toIso = new Date(nowUtc.getTime() + 60 * 60 * 1000).toISOString();
 
-  const queries = [
+  const endpointList = pid === 'panel2'
+    ? [ep.messages, `${root}/sms`, `${root}/getmessages`, `${root}/inbox`, `${root}/otp`].filter(
+        (u, idx, arr) => u && arr.indexOf(u) === idx
+      )
+    : [ep.messages];
+
+  const queryList = [
     { from: fromIso, to: toIso, number: cleanDigits, limit: 30 },
     { number: cleanDigits, limit: 30 },
+    { phone: cleanDigits, limit: 30 },
     { limit: 50 }
   ];
 
-  for (const params of queries) {
-    try {
-      const res = await callImsPanel(ep.messages, params, 15000);
-      const raw = res.data;
-      const rows = Array.isArray(raw?.records)
-        ? raw.records
-        : Array.isArray(raw?.data)
-        ? raw.data
-        : Array.isArray(raw?.messages)
-        ? raw.messages
-        : Array.isArray(raw)
-        ? raw
-        : [];
-      if (rows.length > 0) return rows;
-    } catch (_) {}
+  for (const endpointUrl of endpointList) {
+    for (const params of queryList) {
+      try {
+        const res = await callPanelRequest(endpointUrl, params, 15000, pid);
+        const rows = extractMessagesArrayFromPayload(res.data);
+        if (rows.length > 0) return rows;
+      } catch (_) {}
+    }
   }
 
   return [];
 }
 
-async function requestOtpFromIms(_orderId, phone) {
-  if (!isImsReady() || !phone) return null;
+async function requestOtpFromPanel(_orderId, phone, panelId = 'panel1') {
+  if (!phone) return null;
+  const pid = normalizePanelId(panelId);
+  if (!isPanelConfigured(pid)) return null;
+
   const cleanDigits = String(phone).replace(/[^\d]/g, '');
   if (!cleanDigits) return null;
 
-  const rows = await fetchImsMessagesRows(cleanDigits);
+  const rows = await fetchPanelMessagesRows(cleanDigits, pid);
 
   for (const row of rows) {
     const rowPhone = String(
@@ -1186,8 +1318,10 @@ async function requestOtpFromIms(_orderId, phone) {
         row?.destination ||
         row?.phone ||
         row?.phoneNumber ||
+        row?.phone_number ||
         row?.msisdn ||
         row?.did ||
+        row?.recipient ||
         ''
     ).replace(/[^\d]/g, '');
 
@@ -1196,7 +1330,14 @@ async function requestOtpFromIms(_orderId, phone) {
     }
 
     const textBody = String(
-      row?.content || row?.message || row?.text || row?.sms || row?.body || row?.otp || row?.code || ''
+      row?.content ||
+        row?.message ||
+        row?.text ||
+        row?.sms ||
+        row?.body ||
+        row?.otp ||
+        row?.code ||
+        ''
     );
     const code = extractOtpCodeFromText(textBody);
     if (code) return code;
@@ -1470,64 +1611,86 @@ setInterval(async () => {
   }
 }, TWENTY_MIN_MS);
 
-function buildNumberCard(sess, otp = null) {
-  const item = sess.item;
-  const serviceName = item.service || 'Telegram';
-  const digits = String(item.phone || '').replace(/[^\d]/g, '');
-  const shownPhone =
-    sess.stripCC && item.dial && digits.startsWith(item.dial)
-      ? digits.slice(item.dial.length)
-      : `+${digits}`;
+function formatDisplayedPhoneNumber(rawPhone, dial, stripCC) {
+  const digits = String(rawPhone || '').replace(/[^\d]/g, '');
+  if (stripCC && dial && digits.startsWith(dial)) {
+    return digits.slice(dial.length);
+  }
+  return `+${digits}`;
+}
+
+function buildNumberCard(sess) {
+  const items = Array.isArray(sess.items) && sess.items.length ? sess.items : [sess.item];
+  const primary = items[0];
+  const serviceName = primary.service || 'Telegram';
+
+  const numberLines = items.map((entry, idx) => {
+    const shown = formatDisplayedPhoneNumber(entry.phone, entry.dial, sess.stripCC);
+    const otpSuffix = entry.otp ? `  ✅ \`${formatDashedOtp(entry.otp)}\`` : '';
+    return `${idx + 1}. ${entry.flag} \`${shown}\`${otpSuffix}`;
+  });
+
+  const anyOtp = items.find((x) => x.otp);
+  const statusLine = anyOtp
+    ? `✅ *OTP Received!*`
+    : `⏳ *Waiting for OTP....*`;
 
   const text =
-    `${item.flag} 🟢 *${serviceName} ${item.countryName}:*\n` +
-    `🌍 Country: *${item.countryName}*\n` +
-    (item.range && item.range !== 'auto' ? `🔢 Range: \`${item.range}\`\n` : '') +
-    (otp ? `✅ *OTP:* \`${formatDashedOtp(otp)}\`` : `⏳ *Waiting for OTP....*`);
+    `${primary.flag} 🟢 *${serviceName} ${primary.countryName} (${items.length}টি নম্বর):*\n` +
+    `🌍 Country: *${primary.countryName}*\n` +
+    (primary.range && primary.range !== 'auto' ? `🔢 Range: \`${primary.range}\`\n` : '') +
+    `${numberLines.join('\n')}\n` +
+    `${statusLine}`;
 
-  const rows = [
-    [
+  const rows = [];
+  for (const entry of items) {
+    const shown = formatDisplayedPhoneNumber(entry.phone, entry.dial, sess.stripCC);
+    rows.push([
       {
-        text: `${item.flag} 📋 ${shownPhone}`,
+        text: `${entry.flag} 📋 ${shown}`,
         type: 'copy_text',
-        copy_text: { text: shownPhone },
+        copy_text: { text: shown },
         style: 'success'
       }
-    ],
-    [
-      {
-        text: sess.autoChecker !== false ? '🟢 Auto Checker On' : '⏸️ Auto Checker Off',
-        callback_data: 'toggle_auto_chk',
-        style: sess.autoChecker !== false ? 'success' : 'primary'
-      },
-      {
-        text: sess.stripCC ? '🟢 Restore CC' : '❌ Remove CC',
-        callback_data: 'toggle_cc',
-        style: 'danger'
-      }
-    ],
-    [
-      {
-        text: '🔄 Change Number',
-        callback_data: `chg_num_${encodeURIComponent(serviceName)}__auto`,
-        style: 'danger'
-      }
-    ],
-    [
-      {
-        text: '🔢 Set Range',
-        callback_data: `ask_rng_${encodeURIComponent(serviceName)}`,
-        style: 'primary'
-      }
-    ],
-    [
-      {
-        text: '🌐 Change Country',
-        callback_data: `pick_srv_${encodeURIComponent(serviceName)}`,
-        style: 'primary'
-      }
-    ]
-  ];
+    ]);
+  }
+
+  rows.push([
+    {
+      text: sess.autoChecker !== false ? '🟢 Auto Checker On' : '⏸️ Auto Checker Off',
+      callback_data: 'toggle_auto_chk',
+      style: sess.autoChecker !== false ? 'success' : 'primary'
+    },
+    {
+      text: sess.stripCC ? '🟢 Restore CC' : '❌ Remove CC',
+      callback_data: 'toggle_cc',
+      style: 'danger'
+    }
+  ]);
+
+  rows.push([
+    {
+      text: '🔄 Change Number',
+      callback_data: `chg_num_${encodeURIComponent(serviceName)}__auto`,
+      style: 'danger'
+    }
+  ]);
+
+  rows.push([
+    {
+      text: '🔢 Set Range',
+      callback_data: `ask_rng_${encodeURIComponent(serviceName)}`,
+      style: 'primary'
+    }
+  ]);
+
+  rows.push([
+    {
+      text: '🌐 Change Country',
+      callback_data: `pick_srv_${encodeURIComponent(serviceName)}`,
+      style: 'primary'
+    }
+  ]);
 
   if (state.otpGroupLink && /^https?:\/\//i.test(state.otpGroupLink)) {
     rows.push([{ text: '📩 Otp Group', url: state.otpGroupLink }]);
@@ -1631,22 +1794,27 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
   }
   await clearPreviousBoards(ctx.chat.id, ctx.from.id, null);
 
-  const statusData = await fetchPanelBalanceRaw();
+  const activePid = getActiveSyncPanelId();
+  const statusData = await fetchPanelBalanceRaw(activePid);
+  const p2Ready = Boolean(getPanelBaseUrl('panel2') && getPanelApiToken('panel2'));
   const rate = state.otpReward;
   const totalNums = state.numberHistory.length;
   const totalOtps = state.otpStats.total;
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
   const apiStatusText = statusData?.status === 'connected'
-    ? 'Connected (IMS REST v1)'
+    ? `Connected (${statusData.panel})`
     : 'Not Connected / Check URL & Token';
 
   const text =
     (statusNote ? `🟨 *STATUS BOARD*\n🟩 *${statusNote}*\n\n` : '') +
     `🟦 *IMS ADMIN CONTROL BOARD*\n` +
     `🟩 *Users:* *${state.users.length}* | *Numbers:* *${totalNums}* | *OTPs:* *${totalOtps}*\n` +
-    `🟪 *IMS Status:* *${apiStatusText}* | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
-    `🟦 *IMS URL:* \`${getImsBaseUrl() || 'Not Set'}\`\n` +
-    `🟨 *API Token:* \`${maskImsToken(getImsApiToken())}\`\n` +
+    `🟪 *Status:* *${apiStatusText}* | *Rate:* *৳${state.rewardEnabled ? rate : 0}*\n` +
+    `🟦 *Active Sync:* *${activePid === 'panel2' ? 'Panel 2 (Universal)' : 'Panel 1 (IMS)'}*\n` +
+    `🟦 *Panel 1 URL:* \`${getPanelBaseUrl('panel1') || 'Not Set'}\`\n` +
+    `🟨 *Panel 1 Token:* \`${maskImsToken(getPanelApiToken('panel1'))}\`\n` +
+    `🟪 *Panel 2 URL:* \`${getPanelBaseUrl('panel2') || 'Not Set'}\` (${p2Ready ? 'Ready' : 'Off'})\n` +
+    `🟨 *Panel 2 Token:* \`${maskImsToken(getPanelApiToken('panel2'))}\`\n` +
     `🟩 *Number Pool:* *${unusedCustom} টি রেডি নম্বর*\n` +
     `🟦 *Main:* \`${state.mainGroupLink}\` (\`${state.mainGroupId || 'No ID'}\`)\n` +
     `🟩 *OTP:* \`${state.otpGroupLink}\` (\`${state.otpGroupId || 'No ID'}\`)\n` +
@@ -1664,18 +1832,40 @@ async function showAdminBoardInReplyMenu(ctx, statusNote = '') {
 async function openPanelAndNumberManagerBoard(ctx, preferEdit = false) {
   const unusedCustom = (state.customNumbers || []).filter((x) => !x.used).length;
   const totalCustom = (state.customNumbers || []).length;
+  const activePid = getActiveSyncPanelId();
+  const activeLabel = activePid === 'panel2' ? 'Panel 2 (Universal)' : 'Panel 1 (IMS)';
+
   const text =
-    `⚙️ *IMS PANEL & NUMBER MANAGER*\n` +
-    `🟦 *IMS Base URL:* \`${getImsBaseUrl() || 'Not Set'}\`\n` +
-    `🟨 *IMS API Token:* \`${maskImsToken(getImsApiToken())}\`\n` +
+    `⚙️ *DUAL PANEL & NUMBER MANAGER*\n` +
+    `🟩 *Active Sync Panel:* *${activeLabel}*\n` +
+    `🟦 *Panel 1 URL:* \`${getPanelBaseUrl('panel1') || 'Not Set'}\`\n` +
+    `🟨 *Panel 1 Token:* \`${maskImsToken(getPanelApiToken('panel1'))}\`\n` +
+    `🟪 *Panel 2 URL:* \`${getPanelBaseUrl('panel2') || 'Not Set'}\`\n` +
+    `🟨 *Panel 2 Token:* \`${maskImsToken(getPanelApiToken('panel2'))}\`\n` +
     `🟩 *Number Pool:* *${unusedCustom} রেডি / ${totalCustom} মোট*\n\n` +
-    `➕ *Add Number* দিয়ে ফাইল/নম্বর দিন, 🔄 *Sync Panel Num* দিয়ে প্যানেলে থাকা দেশের নম্বর লোড করুন অথবা 🗑️ *Delete Numbers* দিয়ে মুছুন।`;
+    `➕ *Add Number* দিয়ে ফাইল/নম্বর দিন, 🔄 *Sync Panel Num* দিয়ে সিলেক্টেড প্যানেলের নম্বর লোড করুন অথবা 🗑️ *Delete Numbers* দিয়ে মুছুন।`;
 
   const markup = {
     inline_keyboard: [
       [
-        { text: '🌐 Set IMS URL', callback_data: 'adm_set_baseurl', style: 'primary' },
-        { text: '🔑 Set API Token', callback_data: 'adm_set_apikey', style: 'primary' }
+        {
+          text: activePid === 'panel1' ? '✅ Active: Panel 1' : '🔄 Switch to Panel 1',
+          callback_data: 'adm_switch_p1',
+          style: activePid === 'panel1' ? 'success' : 'primary'
+        },
+        {
+          text: activePid === 'panel2' ? '✅ Active: Panel 2' : '🔄 Switch to Panel 2',
+          callback_data: 'adm_switch_p2',
+          style: activePid === 'panel2' ? 'success' : 'primary'
+        }
+      ],
+      [
+        { text: '🌐 P1 URL', callback_data: 'adm_set_baseurl', style: 'primary' },
+        { text: '🔑 P1 Token', callback_data: 'adm_set_apikey', style: 'primary' }
+      ],
+      [
+        { text: '🌍 P2 URL (Any)', callback_data: 'adm_set_p2_url', style: 'primary' },
+        { text: '🗝️ P2 Key (Any)', callback_data: 'adm_set_p2_key', style: 'primary' }
       ],
       [
         { text: '➕ Add Number', callback_data: 'adm_add_number', style: 'success' },
@@ -1789,33 +1979,52 @@ async function openDeleteNumbersMenu(ctx, preferEdit = true) {
 
 setInterval(async () => {
   for (const [uid, sess] of state.userSession.entries()) {
-    if (!sess || !sess.item || sess.otpDelivered || sess.autoChecker === false) continue;
-    try {
-      const otp = await requestOtpFromIms(sess.item.orderId, sess.item.phone);
-      if (otp) {
-        sess.otpDelivered = true;
-        sess.otpValue = otp;
-        state.userSession.set(uid, sess);
-        await recordTraffic(sess.item.phone);
+    if (!sess || sess.autoChecker === false) continue;
+    const entries = Array.isArray(sess.items) && sess.items.length
+      ? sess.items
+      : sess.item
+      ? [sess.item]
+      : [];
+    if (!entries.length) continue;
 
-        if (state.rewardEnabled && Number(state.otpReward) > 0) {
-          const curBal = Number(state.balances[String(uid)] || 0);
-          const nextBal = Number((curBal + Number(state.otpReward)).toFixed(2));
-          state.balances[String(uid)] = nextBal;
-          await dbPut(`balances/${uid}`, nextBal);
+    let anyUpdated = false;
+
+    for (const entry of entries) {
+      if (!entry || !entry.phone || entry.otpDelivered) continue;
+      try {
+        const pid = normalizePanelId(entry.panelId || sess.item?.panelId || 'panel1');
+        const otp = await requestOtpFromPanel(entry.orderId, entry.phone, pid);
+        if (otp) {
+          entry.otp = otp;
+          entry.otpDelivered = true;
+          sess.otpDelivered = true;
+          sess.otpValue = otp;
+          anyUpdated = true;
+
+          await recordTraffic(entry.phone);
+
+          if (state.rewardEnabled && Number(state.otpReward) > 0) {
+            const curBal = Number(state.balances[String(uid)] || 0);
+            const nextBal = Number((curBal + Number(state.otpReward)).toFixed(2));
+            state.balances[String(uid)] = nextBal;
+            await dbPut(`balances/${uid}`, nextBal);
+          }
+
+          await deliverOtpToUserAndGroup(uid, entry, otp, { sendToUser: true });
         }
-
-        if (sess.chatId && sess.cardMsgId) {
-          const updatedCard = buildNumberCard(sess, otp);
-          try {
-            await rawEditMessageText(sess.chatId, sess.cardMsgId, updatedCard.text, updatedCard.reply_markup);
-          } catch (_) {}
-        }
-
-        await deliverOtpToUserAndGroup(uid, sess.item, otp, { sendToUser: true });
+      } catch (err) {
+        console.error('[GET-OTP ERR]:', err.response?.data || err.message);
       }
-    } catch (err) {
-      console.error('[GET-OTP ERR]:', err.response?.data || err.message);
+    }
+
+    if (anyUpdated) {
+      state.userSession.set(uid, sess);
+      if (sess.chatId && sess.cardMsgId) {
+        const updatedCard = buildNumberCard(sess);
+        try {
+          await rawEditMessageText(sess.chatId, sess.cardMsgId, updatedCard.text, updatedCard.reply_markup);
+        } catch (_) {}
+      }
     }
   }
 }, OTP_POLL_MS);
@@ -1911,7 +2120,7 @@ bot.action('cancel_rng_input', async (ctx) => {
   await ctx.answerCbQuery('বাতিল করা হয়েছে');
   const sess = state.userSession.get(ctx.from.id);
   if (sess?.item) {
-    const card = buildNumberCard(sess, sess.otpValue || null);
+    const card = buildNumberCard(sess);
     return sendCleanBoard(ctx, card.text, card.reply_markup, true);
   }
   return openServiceMenu(ctx, true);
@@ -1938,6 +2147,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     }
     const sess = {
       item: res,
+      items: res.items || [res],
       stripCC: false,
       autoChecker: true,
       otpDelivered: false,
@@ -1947,7 +2157,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
     };
     state.userSession.set(ctx.from.id, sess);
     await saveNumberToHistory(ctx.from.id, res);
-    const card = buildNumberCard(sess, null);
+    const card = buildNumberCard(sess);
     const sent = await sendCleanBoard(ctx, card.text, card.reply_markup, preferEdit);
     if (sent?.message_id) {
       sess.cardMsgId = sent.message_id;
@@ -1970,7 +2180,7 @@ async function assignAndShowNumber(ctx, service, range, preferEdit = true) {
 }
 
 bot.action(/^get_num_(.+)__(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('নম্বর নেওয়া হচ্ছে...');
+  await ctx.answerCbQuery('৩টি নম্বর নেওয়া হচ্ছে...');
   await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), decodeURIComponent(ctx.match[2]), true);
 });
 
@@ -1983,7 +2193,7 @@ bot.action(/^notif_num_(.+)__(.+?)__(.*)$/, async (ctx) => {
 });
 
 bot.action(/^chg_num_(.+)__(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('নম্বর পরিবর্তন হচ্ছে...');
+  await ctx.answerCbQuery('নতুন ৩টি নম্বর আনা হচ্ছে...');
   await assignAndShowNumber(ctx, decodeURIComponent(ctx.match[1]), 'auto', true);
 });
 
@@ -1993,7 +2203,7 @@ bot.action('toggle_auto_chk', async (ctx) => {
   sess.autoChecker = sess.autoChecker === false ? true : false;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.autoChecker ? 'Auto Checker On' : 'Auto Checker Off');
-  const card = buildNumberCard(sess, sess.otpValue || null);
+  const card = buildNumberCard(sess);
   try {
     await rawEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, card.text, card.reply_markup);
   } catch (_) {}
@@ -2005,7 +2215,7 @@ bot.action('toggle_cc', async (ctx) => {
   sess.stripCC = !sess.stripCC;
   state.userSession.set(ctx.from.id, sess);
   await ctx.answerCbQuery(sess.stripCC ? 'CC Removed' : 'CC Restored');
-  const card = buildNumberCard(sess, sess.otpValue || null);
+  const card = buildNumberCard(sess);
   try {
     await rawEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, card.text, card.reply_markup);
   } catch (_) {}
@@ -2073,9 +2283,29 @@ bot.hears(/^💠 ADMIN PANEL(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   await showAdminBoardInReplyMenu(ctx);
 });
 
-bot.hears(/^⚙️ Panel & Add Num(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
+bot.hears(/^⚙️ Panel & Add Num(?:\s*\(P[12]\))?(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   await openPanelAndNumberManagerBoard(ctx, false);
+});
+
+bot.action('adm_switch_p1', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.activeSyncPanel = 'panel1';
+  state.cachedRanges = null;
+  state.cachedNumbers = null;
+  await dbPut('config/activeSyncPanel', 'panel1');
+  await ctx.answerCbQuery('Panel 1 সিলেক্ট হয়েছে');
+  await openPanelAndNumberManagerBoard(ctx, true);
+});
+
+bot.action('adm_switch_p2', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.activeSyncPanel = 'panel2';
+  state.cachedRanges = null;
+  state.cachedNumbers = null;
+  await dbPut('config/activeSyncPanel', 'panel2');
+  await ctx.answerCbQuery('Panel 2 সিলেক্ট হয়েছে');
+  await openPanelAndNumberManagerBoard(ctx, true);
 });
 
 bot.action('adm_set_baseurl', async (ctx) => {
@@ -2084,7 +2314,7 @@ bot.action('adm_set_baseurl', async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🌐 *SET IMS PANEL URL*\n🟦 *IMS REST Base URL পাঠান (যেমন: \`https://imssms.org/api/v1\`)*`,
+    `🌐 *SET PANEL 1 (IMS) URL*\n🟦 *IMS REST Base URL পাঠান (যেমন: \`https://imssms.org/api/v1\`)*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
   );
@@ -2096,7 +2326,31 @@ bot.action('adm_set_apikey', async (ctx) => {
   await ctx.answerCbQuery();
   await sendCleanBoard(
     ctx,
-    `🔑 *SET IMS API TOKEN*\n🟦 *IMS প্যানেলের API Token পাঠান*`,
+    `🔑 *SET PANEL 1 (IMS) API TOKEN*\n🟦 *Panel 1-এর API Token পাঠান*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    true
+  );
+});
+
+bot.action('adm_set_p2_url', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, { step: 'p2_url' });
+  await ctx.answerCbQuery();
+  await sendCleanBoard(
+    ctx,
+    `🌍 *SET UNIVERSAL PANEL 2 URL*\n🟦 *যেকোনো প্যানেলের (IMS / Volt / UMS / Other) API URL পাঠান*`,
+    { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
+    true
+  );
+});
+
+bot.action('adm_set_p2_key', async (ctx) => {
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
+  state.adminWizard.set(ctx.from.id, { step: 'p2_key' });
+  await ctx.answerCbQuery();
+  await sendCleanBoard(
+    ctx,
+    `🗝️ *SET UNIVERSAL PANEL 2 API KEY*\n🟦 *Panel 2-এর API Key / Token পাঠান*`,
     { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
     true
   );
@@ -2117,14 +2371,15 @@ bot.action('adm_add_number', async (ctx) => {
 
 bot.action('adm_sync_panel_menu', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  await ctx.answerCbQuery('প্যানেলের নম্বর চেক করা হচ্ছে...');
+  const activePid = getActiveSyncPanelId();
+  await ctx.answerCbQuery(`${activePid === 'panel2' ? 'Panel 2' : 'Panel 1'} চেক করা হচ্ছে...`);
 
-  const fetched = await fetchPanelRawNumberRecords();
+  const fetched = await fetchPanelRawNumberRecords(activePid);
   if (fetched.error) {
     return showAdminBoardInReplyMenu(ctx, `⚠️ প্যানেল থেকে নম্বর আনা যায়নি। কারণ: ${fetched.error}`);
   }
 
-  const grouped = groupFetchedPanelNumbersByCountry(fetched.records);
+  const grouped = groupFetchedPanelNumbersByCountry(fetched.records, activePid);
   const availableCountries = [...grouped.values()].filter(
     (c) => Array.isArray(c.phones) && c.phones.length > 0
   );
@@ -2138,7 +2393,7 @@ bot.action('adm_sync_panel_menu', async (ctx) => {
   if (!availableCountries.length) {
     return sendCleanBoard(
       ctx,
-      `🔄 *SYNC PANEL NUMBERS*\n🟩 *প্যানেলে যুক্ত করার মতো কোনো নতুন অব্যবহৃত নম্বর নেই।*`,
+      `🔄 *SYNC PANEL NUMBERS (${activePid === 'panel2' ? 'Panel 2' : 'Panel 1'})*\n🟩 *প্যানেলে যুক্ত করার মতো কোনো নতুন অব্যবহৃত নম্বর নেই।*`,
       { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]] },
       true
     );
@@ -2167,7 +2422,7 @@ bot.action('adm_sync_panel_menu', async (ctx) => {
   rows.push([{ text: '⬅️ Back', callback_data: 'adm_back_mgr', style: 'danger' }]);
 
   const text =
-    `🔄 *SYNC PANEL NUMBERS — প্যানেলে থাকা দেশ*\n` +
+    `🔄 *SYNC PANEL NUMBERS — ${activePid === 'panel2' ? 'Panel 2' : 'Panel 1'}*\n` +
     `🟦 *দেশ পাওয়া গেছে:* *${availableCountries.length}টি*\n` +
     `🟩 *যে দেশের নম্বর লোড করতে চান সেই দেশে চাপুন:*`;
 
@@ -2347,7 +2602,7 @@ bot.hears(/^(?:🟢 API: ON|🔴 API: OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) =>
   state.cachedRanges = null;
   state.cachedNumbers = null;
   await dbPut('config/apiUrlEnabled', state.apiEnabled);
-  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ IMS OTP API চালু হয়েছে।' : '⛔ IMS OTP API বন্ধ হয়েছে।');
+  await showAdminBoardInReplyMenu(ctx, state.apiEnabled ? '✅ Panel API চালু হয়েছে।' : '⛔ Panel API বন্ধ হয়েছে।');
 });
 
 bot.hears(/^🔢 Range: (?:ON|OFF)(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
@@ -2433,15 +2688,16 @@ bot.hears(/^👥 Stats(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 
 bot.hears(/^🧪 Balance API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const data = await fetchPanelBalanceRaw();
-  const preview = JSON.stringify(data || { error: 'IMS API response unavailable' }, null, 2).slice(0, 1000);
-  await sendCleanBoard(ctx, `🧪 *IMS STATUS BOARD*\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
+  const activePid = getActiveSyncPanelId();
+  const data = await fetchPanelBalanceRaw(activePid);
+  const preview = JSON.stringify(data || { error: 'Panel API response unavailable' }, null, 2).slice(0, 1000);
+  await sendCleanBoard(ctx, `🧪 *PANEL STATUS BOARD*\n🟦 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
 
 bot.hears(/^📡 Range API(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
   state.cachedRanges = null;
-  const list = await fetchActiveRanges();
+  const list = await fetchActiveRanges(getActiveSyncPanelId());
   const preview = JSON.stringify(list.slice(0, 5), null, 2).slice(0, 1000);
   await sendCleanBoard(ctx, `📡 *GET /ranges (${list.length}) BOARD*\n🟪 \`${preview}\``, getAdminPanelAsMainKeyboard());
 });
@@ -2451,7 +2707,7 @@ bot.hears(/^📊 Num Status(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   const st = await getPanelAndPoolNumberUsageStats();
 
   const customSection =
-    `🟩 *Number Pool (Uploaded + Synced):*\n` +
+    `🟩 *Number Pool (Panel 1 + Panel 2 + Uploaded):*\n` +
     `  • মোট নম্বর: *${st.customTotal}*\n` +
     `  • ব্যবহার হয়েছে: *${st.customUsed}*\n` +
     `  • ব্যবহার হয়নি: *${st.customUnused}*`;
@@ -2462,12 +2718,17 @@ bot.hears(/^📊 Num Status(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
 
 bot.hears(/^🔗 Endpoints(?:\s*⋮⋮⋮⋮)?$/, async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id)) return;
-  const ep = getImsEndpoints();
+  const ep1 = getPanelEndpoints('panel1');
+  const ep2 = getPanelEndpoints('panel2');
   const text =
-    `🔗 *IMS API ENDPOINTS*\n\n` +
-    `• Messages (OTP): ${ep.messages || 'Not Set'}\n` +
-    `• Numbers (Sync): ${ep.numbers || 'Not Set'}\n` +
-    `• Ranges: ${ep.ranges || 'Not Set'}`;
+    `🔗 *DUAL PANEL ENDPOINTS*\n\n` +
+    `🟦 *Panel 1 (IMS):*\n` +
+    `• Messages (OTP): ${ep1.messages || 'Not Set'}\n` +
+    `• Numbers (Sync): ${ep1.numbers || 'Not Set'}\n` +
+    `• Ranges: ${ep1.ranges || 'Not Set'}\n\n` +
+    `🟪 *Panel 2 (Universal):*\n` +
+    `• Base URL: ${ep2.base || 'Not Set'}\n` +
+    `• Auto-Fallback: /messages, /sms, /numbers, /getnumbers, /ranges`;
   await sendCleanBoard(ctx, text, getAdminPanelAsMainKeyboard());
 });
 
@@ -2485,6 +2746,7 @@ async function commitAddedNumbers(ctx, wiz) {
   const srv = String(wiz.service || 'Telegram').trim() || 'Telegram';
   const rawCountry = String(wiz.country || '').trim();
   const phones = Array.isArray(wiz.phones) ? wiz.phones : [];
+  const activePid = getActiveSyncPanelId();
 
   const addedEntries = [];
   for (const rawPhone of phones) {
@@ -2497,6 +2759,7 @@ async function commitAddedNumbers(ctx, wiz) {
     addedEntries.push({
       service: srv,
       phone: finalPhone,
+      panelId: activePid,
       countryKey: cInfo.key,
       countryName: cInfo.name,
       countryLabel: cInfo.label,
@@ -2591,7 +2854,7 @@ bot.on('text', async (ctx) => {
       state.cachedNumbers = null;
       hitSnapshotsByKey.clear();
       await dbPut('config/baseUrl', cleanedUrl);
-      return showAdminBoardInReplyMenu(ctx, `✅ নতুন IMS Base URL সেট হয়েছে: ${getImsBaseUrl()}`);
+      return showAdminBoardInReplyMenu(ctx, `✅ নতুন Panel 1 URL সেট হয়েছে: ${getPanelBaseUrl('panel1')}`);
     }
 
     if (mode === 'key') {
@@ -2600,7 +2863,29 @@ bot.on('text', async (ctx) => {
       state.cachedRanges = null;
       state.cachedNumbers = null;
       await dbPut('config/apiKey', txt);
-      return showAdminBoardInReplyMenu(ctx, '✅ নতুন IMS API Token সেট হয়েছে।');
+      return showAdminBoardInReplyMenu(ctx, '✅ নতুন Panel 1 API Token সেট হয়েছে।');
+    }
+
+    if (mode === 'p2_url') {
+      state.adminWizard.delete(uid);
+      const cleanedUrl = txt.replace(/\/+$/, '');
+      if (!/^https?:\/\/.+/i.test(cleanedUrl)) {
+        return showAdminBoardInReplyMenu(ctx, '⚠️ Panel 2-এর জন্য সঠিক http/https API URL দিন।');
+      }
+      state.panel2Url = cleanedUrl;
+      state.cachedRanges = null;
+      state.cachedNumbers = null;
+      await dbPut('config/panel2Url', cleanedUrl);
+      return showAdminBoardInReplyMenu(ctx, `✅ নতুন Universal Panel 2 URL সেট হয়েছে: ${getPanelBaseUrl('panel2')}`);
+    }
+
+    if (mode === 'p2_key') {
+      state.adminWizard.delete(uid);
+      state.panel2Key = txt;
+      state.cachedRanges = null;
+      state.cachedNumbers = null;
+      await dbPut('config/panel2Key', txt);
+      return showAdminBoardInReplyMenu(ctx, '✅ নতুন Universal Panel 2 API Key সেট হয়েছে।');
     }
 
     if (mode === 'sync_custom_service') {
@@ -2723,7 +3008,7 @@ if (SELF_URL) {
 (async () => {
   if (FIREBASE_DB_URL) {
     const [
-      u, b, st, hist, baseUrlDb, key, customPool,
+      u, b, st, hist, activePanelDb, baseUrlDb, key, p2UrlDb, p2KeyDb, customPool,
       en, rngEn, rewEn, notifEn, shMode, jc,
       mLink, mId, oLink, oId, rLink, rId, own, vUsers
     ] = await Promise.all([
@@ -2731,8 +3016,11 @@ if (SELF_URL) {
       dbGet('balances'),
       dbGet('stats/otps'),
       dbGet('history/numbers'),
+      dbGet('config/activeSyncPanel'),
       dbGet('config/baseUrl'),
       dbGet('config/apiKey'),
+      dbGet('config/panel2Url'),
+      dbGet('config/panel2Key'),
       dbGet('customNumbers/list'),
       dbGet('config/apiUrlEnabled'),
       dbGet('config/rangeEnabled'),
@@ -2755,8 +3043,11 @@ if (SELF_URL) {
       state.otpStats = { total: Number(st.total || 0), byCountry: st.byCountry || st.byRange || {} };
     }
     if (Array.isArray(hist)) state.numberHistory = hist;
+    if (activePanelDb) state.activeSyncPanel = normalizePanelId(activePanelDb);
     if (baseUrlDb) state.baseUrl = String(baseUrlDb).trim();
     if (key) state.apiKey = key;
+    if (p2UrlDb) state.panel2Url = String(p2UrlDb).trim();
+    if (p2KeyDb) state.panel2Key = p2KeyDb;
     if (Array.isArray(customPool)) state.customNumbers = customPool;
     if (typeof en === 'boolean') state.apiEnabled = en;
     if (typeof rngEn === 'boolean') state.rangeEnabled = rngEn;
@@ -2782,7 +3073,7 @@ if (SELF_URL) {
   } catch (_) {}
 
   await bot.launch();
-  console.log('IMS REST Bot running with Country-Filtered Sync & Custom Pool...');
+  console.log('Dual-Panel Bot running with 3-Number Cards & Universal Panel 2...');
 })();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
